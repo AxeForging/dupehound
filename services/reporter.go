@@ -37,15 +37,15 @@ func formatText(report *domain.Report) string {
 	}
 
 	for i, clone := range report.Clones {
-		fmt.Fprintf(&b, "Clone #%d (%d lines, %d instances)\n", i+1, clone.LineCount, len(clone.Instances))
+		fmt.Fprintf(&b, "Clone #%d  %d lines · %d tokens · %d instances\n",
+			i+1, clone.LineCount, clone.TokenCount, len(clone.Instances))
 		for _, inst := range clone.Instances {
 			fmt.Fprintf(&b, "  %s:%d-%d\n", inst.File, inst.StartLine, inst.EndLine)
 		}
-		// Show the first instance's lines as a preview
 		if len(clone.Instances) > 0 {
 			fmt.Fprintf(&b, "  Preview:\n")
 			for _, line := range clone.Instances[0].Lines {
-				fmt.Fprintf(&b, "    %s\n", line)
+				fmt.Fprintf(&b, "    %s\n", strings.TrimRight(line, " \t"))
 			}
 		}
 		fmt.Fprintf(&b, "\n")
@@ -64,13 +64,13 @@ func formatJSON(report *domain.Report) (string, error) {
 
 // sarifReport is a minimal SARIF 2.1.0 structure.
 type sarifReport struct {
-	Version string      `json:"version"`
-	Schema  string      `json:"$schema"`
-	Runs    []sarifRun  `json:"runs"`
+	Version string     `json:"version"`
+	Schema  string     `json:"$schema"`
+	Runs    []sarifRun `json:"runs"`
 }
 
 type sarifRun struct {
-	Tool    sarifTool    `json:"tool"`
+	Tool    sarifTool     `json:"tool"`
 	Results []sarifResult `json:"results"`
 }
 
@@ -79,14 +79,14 @@ type sarifTool struct {
 }
 
 type sarifDriver struct {
-	Name            string      `json:"name"`
-	InformationURI  string      `json:"informationUri"`
-	Rules           []sarifRule `json:"rules"`
+	Name           string      `json:"name"`
+	InformationURI string      `json:"informationUri"`
+	Rules          []sarifRule `json:"rules"`
 }
 
 type sarifRule struct {
-	ID               string         `json:"id"`
-	ShortDescription sarifMessage   `json:"shortDescription"`
+	ID               string       `json:"id"`
+	ShortDescription sarifMessage `json:"shortDescription"`
 }
 
 type sarifResult struct {

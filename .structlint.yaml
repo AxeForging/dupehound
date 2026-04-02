@@ -1,43 +1,52 @@
-allowed_paths:
-  - actions/
-  - domain/
-  - services/
-  - helpers/
-  - integration/
-  - docs/
-  - .github/
+dir_structure:
+  allowedPaths:
+    - "."
+    - "actions/**"
+    - "domain/**"
+    - "services/**"
+    - "helpers/**"
+    - "integration/**"
+    - ".github/**"
+  disallowedPaths:
+    - "vendor/**"
+    - "node_modules/**"
+    - ".git/**"
+  requiredPaths:
+    - "actions"
+    - "domain"
+    - "services"
+    - "helpers"
 
-disallowed_paths:
-  - vendor/
-  - node_modules/
-  - .git/
+file_naming_pattern:
+  allowed:
+    - "*.go"
+    - "*.mod"
+    - "*.sum"
+    - "*.yaml"
+    - "*.yml"
+    - "*.md"
+    - "Makefile"
+    - "LICENSE"
+    - ".gitignore"
+    - ".golangci.yml"
+    - ".goreleaser.yml"
+    - ".github/**"
+  disallowed:
+    - "*.env*"
+    - ".env*"
+    - "*.key"
+    - "*.pem"
+    - "*.log"
+    - ".DS_Store"
+  required:
+    - "go.mod"
+    - "README.md"
+    - ".gitignore"
+    - "main.go"
 
-required_paths:
-  - actions
-  - domain
-  - services
-  - helpers
-
-allowed_file_patterns:
-  - "*.go"
-  - "*.mod"
-  - "*.sum"
-  - "*.yaml"
-  - "*.yml"
-  - "*.md"
-  - ".gitignore"
-  - "Makefile"
-  - "LICENSE"
-
-disallowed_file_patterns:
-  - "*.env*"
-  - "*.key"
-  - "*.pem"
-  - "*.log"
-  - ".DS_Store"
-
-required_files:
-  - go.mod
-  - README.md
-  - .gitignore
-  - main.go
+ignore:
+  - ".git"
+  - "vendor"
+  - "node_modules"
+  - "dist"
+  - "dupehound"

@@ -8,10 +8,16 @@ var pathFlag = cli.StringFlag{
 	Usage: "Path to scan (file or directory)",
 }
 
+var minTokensFlag = cli.IntFlag{
+	Name:  "min-tokens, t",
+	Value: 50,
+	Usage: "Minimum number of tokens to consider a duplicate block (~5 lines of average code)",
+}
+
 var minLinesFlag = cli.IntFlag{
 	Name:  "min-lines, l",
-	Value: 5,
-	Usage: "Minimum number of lines to consider a duplicate block",
+	Value: 0,
+	Usage: "[deprecated, use --min-tokens] Minimum lines; converted internally to tokens (×10)",
 }
 
 var formatFlag = cli.StringFlag{

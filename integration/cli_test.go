@@ -74,7 +74,7 @@ func TestScanNoDuplicates(t *testing.T) {
 	writeFile(t, dir, "a.go", "package main\n\nfunc foo() {\n\ta()\n\tb()\n\tc()\n}\n")
 	writeFile(t, dir, "b.go", "package main\n\nfunc bar() {\n\tx()\n\ty()\n\tz()\n}\n")
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3").CombinedOutput()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "30").CombinedOutput()
 	if err != nil {
 		t.Fatalf("scan failed: %v\n%s", err, string(out))
 	}
@@ -86,11 +86,11 @@ func TestScanNoDuplicates(t *testing.T) {
 func TestScanDetectsDuplicate(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\tstore(x)\n\treturn x\n}\n"
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3").CombinedOutput()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10").CombinedOutput()
 	if err != nil {
 		t.Fatalf("scan failed: %v\n%s", err, string(out))
 	}
@@ -99,14 +99,44 @@ func TestScanDetectsDuplicate(t *testing.T) {
 	}
 }
 
+func TestScanType2Clone(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", `package main
+func process() {
+	result := compute()
+	validate(result)
+	store(result)
+	notify(result)
+	return result
+}
+`)
+	writeFile(t, dir, "b.go", `package main
+func process() {
+	output := compute()
+	validate(output)
+	store(output)
+	notify(output)
+	return output
+}
+`)
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "15").CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	if strings.Contains(string(out), "No duplicates found") {
+		t.Errorf("type-2 clone not detected (renamed variables): %s", string(out))
+	}
+}
+
 func TestScanJSONOutput(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	block := "func dup() {\n\ta()\n\tb()\n\tc()\n\td()\n}\n"
+	block := "func dup() {\n\ta := compute()\n\tb := validate(a)\n\tc := store(b)\n\treturn c\n}\n"
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 
-	cmd := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3", "--format", "json")
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--format", "json")
 	out, err := cmd.Output() // stdout only — logger writes to stderr
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
@@ -124,12 +154,12 @@ func TestScanJSONOutput(t *testing.T) {
 func TestScanSARIFOutput(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	block := "func dup() {\n\ta()\n\tb()\n\tc()\n\td()\n}\n"
+	block := "func dup() {\n\ta := compute()\n\tb := validate(a)\n\tc := store(b)\n\treturn c\n}\n"
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 
-	cmd := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3", "--format", "sarif")
-	out, err := cmd.Output() // stdout only — logger writes to stderr
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--format", "sarif")
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
@@ -146,12 +176,12 @@ func TestScanSARIFOutput(t *testing.T) {
 func TestScanFileOutput(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	block := "func dup() {\n\ta()\n\tb()\n\tc()\n\td()\n}\n"
+	block := "func dup() {\n\ta := compute()\n\tb := validate(a)\n\tc := store(b)\n\treturn c\n}\n"
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 	outFile := filepath.Join(dir, "result.txt")
 
-	cmd := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3", "--output", outFile)
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--output", outFile)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("scan failed: %v\n%s", err, string(out))
@@ -174,22 +204,140 @@ func TestScanInvalidFormat(t *testing.T) {
 	cmd := exec.Command(bin, "scan", "--path", dir, "--format", "xml")
 	out, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Errorf("expected error for invalid format, got output: %s", string(out))
+		t.Errorf("expected error for invalid format, got: %s", string(out))
 	}
 }
 
 func TestScanExclude(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	block := "func dup() {\n\ta()\n\tb()\n\tc()\n\td()\n}\n"
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3", "--exclude", "b.go").CombinedOutput()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exclude", "b.go").CombinedOutput()
 	if err != nil {
 		t.Fatalf("scan failed: %v\n%s", err, string(out))
 	}
 	if !strings.Contains(string(out), "No duplicates found") {
 		t.Errorf("expected no duplicates after exclude, got: %s", string(out))
+	}
+}
+
+func TestScanMinLinesDeprecatedStillWorks(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// --min-lines=3 should be accepted and converted to tokens internally.
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-lines", "3").CombinedOutput()
+	if err != nil {
+		t.Fatalf("--min-lines flag rejected: %v\n%s", err, string(out))
+	}
+}
+
+func TestScanSingleFile(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	path := writeFile(t, dir, "a.go", "package main\nfunc foo() { a()\nb()\nc() }\n")
+
+	out, err := exec.Command(bin, "scan", "--path", path, "--min-tokens", "5").CombinedOutput()
+	if err != nil {
+		t.Fatalf("single file scan failed: %v\n%s", err, string(out))
+	}
+	// Single file cannot have cross-file clones; "No duplicates found" is expected.
+	if !strings.Contains(string(out), "No duplicates found") {
+		t.Errorf("expected 'No duplicates found' for single file scan, got: %s", string(out))
+	}
+}
+
+func TestScanEmptyDirectory(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+
+	// Empty dir: no source files — binary should exit non-zero with a clean error.
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Errorf("expected non-zero exit for empty directory, got: %s", string(out))
+	}
+	if len(out) == 0 {
+		t.Error("expected some error output for empty directory, got none")
+	}
+}
+
+func TestScanSARIFResultsStructure(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func dup() {\n\ta := compute()\n\tb := validate(a)\n\tc := store(b)\n\treturn c\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--format", "sarif")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	var sarif map[string]interface{}
+	if err := json.Unmarshal(out, &sarif); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v\n%s", err, string(out))
+	}
+	runs, ok := sarif["runs"].([]interface{})
+	if !ok || len(runs) == 0 {
+		t.Fatal("SARIF missing 'runs' array")
+	}
+	run, ok := runs[0].(map[string]interface{})
+	if !ok {
+		t.Fatal("SARIF runs[0] is not an object")
+	}
+	if _, ok := run["results"]; !ok {
+		t.Error("SARIF runs[0] missing 'results' field")
+	}
+	if _, ok := run["tool"]; !ok {
+		t.Error("SARIF runs[0] missing 'tool' field")
+	}
+}
+
+func TestScanMergeAdjacentWindows(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := `package main
+func bigHelper() {
+	a := compute()
+	b := validate(a)
+	c := transform(b)
+	d := store(c)
+	e := notify(d)
+	f := log(e)
+	g := audit(f)
+	return g
+}
+`
+	writeFile(t, dir, "a.go", block)
+	writeFile(t, dir, "b.go", block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--format", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	// Count clones ≥8 lines: should be 1, not many
+	large := 0
+	for _, c := range report.Clones {
+		if c.LineCount >= 8 {
+			large++
+		}
+	}
+	if large > 1 {
+		t.Errorf("window merging broken: %d large clones, expected 1", large)
 	}
 }

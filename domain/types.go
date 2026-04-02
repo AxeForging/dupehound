@@ -10,9 +10,10 @@ type CloneInstance struct {
 
 // Clone represents a group of identical code blocks found in multiple locations.
 type Clone struct {
-	Hash      string          `json:"hash"`
-	LineCount int             `json:"line_count"`
-	Instances []CloneInstance `json:"instances"`
+	Hash       string          `json:"hash"`
+	LineCount  int             `json:"line_count"`
+	TokenCount int             `json:"token_count"`
+	Instances  []CloneInstance `json:"instances"`
 }
 
 // Report is the full result of a dupehound scan.
@@ -28,7 +29,7 @@ type Report struct {
 type Language struct {
 	Name        string
 	Extensions  []string
-	LineComment  string
+	LineComment string
 	BlockStart  string
 	BlockEnd    string
 }
@@ -36,141 +37,141 @@ type Language struct {
 // SupportedLanguages is the list of languages dupehound can scan.
 var SupportedLanguages = []Language{
 	{
-		Name:       "go",
-		Extensions: []string{".go"},
+		Name:        "go",
+		Extensions:  []string{".go"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "python",
-		Extensions: []string{".py"},
+		Name:        "python",
+		Extensions:  []string{".py"},
 		LineComment: "#",
 		BlockStart:  "",
 		BlockEnd:    "",
 	},
 	{
-		Name:       "javascript",
-		Extensions: []string{".js", ".mjs", ".cjs"},
+		Name:        "javascript",
+		Extensions:  []string{".js", ".mjs", ".cjs"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "typescript",
-		Extensions: []string{".ts", ".tsx"},
+		Name:        "typescript",
+		Extensions:  []string{".ts", ".tsx"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "java",
-		Extensions: []string{".java"},
+		Name:        "java",
+		Extensions:  []string{".java"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "kotlin",
-		Extensions: []string{".kt", ".kts"},
+		Name:        "kotlin",
+		Extensions:  []string{".kt", ".kts"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "rust",
-		Extensions: []string{".rs"},
+		Name:        "rust",
+		Extensions:  []string{".rs"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "c",
-		Extensions: []string{".c", ".h"},
+		Name:        "c",
+		Extensions:  []string{".c", ".h"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "cpp",
-		Extensions: []string{".cpp", ".cc", ".cxx", ".hpp", ".hxx"},
+		Name:        "cpp",
+		Extensions:  []string{".cpp", ".cc", ".cxx", ".hpp", ".hxx"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "csharp",
-		Extensions: []string{".cs"},
+		Name:        "csharp",
+		Extensions:  []string{".cs"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "swift",
-		Extensions: []string{".swift"},
+		Name:        "swift",
+		Extensions:  []string{".swift"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "scala",
-		Extensions: []string{".scala"},
+		Name:        "scala",
+		Extensions:  []string{".scala"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "php",
-		Extensions: []string{".php"},
+		Name:        "php",
+		Extensions:  []string{".php"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "ruby",
-		Extensions: []string{".rb"},
+		Name:        "ruby",
+		Extensions:  []string{".rb"},
 		LineComment: "#",
 		BlockStart:  "",
 		BlockEnd:    "",
 	},
 	{
-		Name:       "shell",
-		Extensions: []string{".sh", ".bash", ".zsh"},
+		Name:        "shell",
+		Extensions:  []string{".sh", ".bash", ".zsh"},
 		LineComment: "#",
 		BlockStart:  "",
 		BlockEnd:    "",
 	},
 	{
-		Name:       "sql",
-		Extensions: []string{".sql"},
+		Name:        "sql",
+		Extensions:  []string{".sql"},
 		LineComment: "--",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "lua",
-		Extensions: []string{".lua"},
+		Name:        "lua",
+		Extensions:  []string{".lua"},
 		LineComment: "--",
 		BlockStart:  "--[[",
 		BlockEnd:    "]]",
 	},
 	{
-		Name:       "elixir",
-		Extensions: []string{".ex", ".exs"},
+		Name:        "elixir",
+		Extensions:  []string{".ex", ".exs"},
 		LineComment: "#",
 		BlockStart:  "",
 		BlockEnd:    "",
 	},
 	{
-		Name:       "dart",
-		Extensions: []string{".dart"},
+		Name:        "dart",
+		Extensions:  []string{".dart"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
-		Name:       "r",
-		Extensions: []string{".r", ".R"},
+		Name:        "r",
+		Extensions:  []string{".r", ".R"},
 		LineComment: "#",
 		BlockStart:  "",
 		BlockEnd:    "",

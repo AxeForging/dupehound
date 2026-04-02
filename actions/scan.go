@@ -25,9 +25,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		helpers.SetupLogger("debug")
 	}
 
+	minTokens := c.Int("min-tokens")
 	minLines := c.Int("min-lines")
-	if minLines <= 0 {
-		return helpers.ErrInvalidMinLines
+
+	// Resolve: min-tokens takes precedence; min-lines is the legacy fallback.
+	if minTokens <= 0 && minLines > 0 {
+		minTokens = minLines * 10
+	}
+	if minTokens <= 0 {
+		return helpers.ErrInvalidMinTokens
 	}
 
 	format := c.String("format")
@@ -37,15 +43,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	}
 
 	opts := services.ScanOptions{
-		Path:     c.String("path"),
-		MinLines: minLines,
-		Exclude:  c.StringSlice("exclude"),
-		Language: c.String("language"),
+		Path:      c.String("path"),
+		MinTokens: minTokens,
+		Exclude:   c.StringSlice("exclude"),
+		Language:  c.String("language"),
 	}
 
 	helpers.Log.Info().
 		Str("path", opts.Path).
-		Int("min-lines", opts.MinLines).
+		Int("min-tokens", opts.MinTokens).
 		Str("format", format).
 		Msg("starting scan")
 

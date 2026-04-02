@@ -1,8 +1,6 @@
 package services
 
 import (
-	"fmt"
-	"hash/fnv"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,17 +11,11 @@ import (
 
 // ScanOptions configures a scan run.
 type ScanOptions struct {
-	Path     string
-	MinLines int
-	Exclude  []string
-	Language string
-}
-
-// windowKey uniquely identifies a clone window location.
-type windowKey struct {
-	file      string
-	startLine int
-	endLine   int
+	Path      string
+	MinTokens int
+	MinLines  int // deprecated; if MinTokens == 0, converted to MinTokens = MinLines * 10
+	Exclude   []string
+	Language  string
 }
 
 // ScannerService performs code duplication detection.
@@ -34,8 +26,17 @@ func NewScannerService() *ScannerService {
 	return &ScannerService{}
 }
 
-// Scan walks the given path and returns a Report of all detected duplicates.
+// Scan walks the given path, tokenizes all source files, and returns a Report of all
+// detected clones. Uses the token-based detector for type-1 and type-2 clone detection.
 func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
+	minTokens := opts.MinTokens
+	if minTokens <= 0 && opts.MinLines > 0 {
+		minTokens = opts.MinLines * 10
+	}
+	if minTokens <= 0 {
+		minTokens = 50 // sensible default
+	}
+
 	files, err := collectFiles(opts.Path, opts.Exclude, opts.Language)
 	if err != nil {
 		return nil, err
@@ -46,58 +47,37 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 
 	helpers.Log.Debug().Int("files", len(files)).Msg("collected files")
 
-	// hash → list of instances
-	index := make(map[string][]domain.CloneInstance)
-
 	totalFiles := len(files)
+	var tokenizedFiles []TokenizedFile
 	scannedFiles := 0
 
-	for _, f := range files {
-		lang := DetectLanguage(f)
+	for _, path := range files {
+		lang := DetectLanguage(path)
 		if lang == nil {
 			continue
 		}
 
-		data, err := os.ReadFile(f)
+		data, err := os.ReadFile(path)
 		if err != nil {
-			helpers.Log.Warn().Str("file", f).Err(err).Msg("skipping unreadable file")
+			helpers.Log.Warn().Str("file", path).Err(err).Msg("skipping unreadable file")
 			continue
 		}
 
-		rawLines := strings.Split(string(data), "\n")
-		norm := NormalizeFile(string(data), lang)
+		tf := BuildTokenizedFile(path, string(data), lang)
 
-		if len(norm.Lines) < opts.MinLines {
+		// Skip files with too few tokens to form even one window.
+		if len(tf.Tokens) < minTokens {
 			scannedFiles++
+			helpers.Log.Debug().Str("file", path).Int("tokens", len(tf.Tokens)).Msg("too few tokens, skipping")
 			continue
 		}
 
-		for i := 0; i+opts.MinLines <= len(norm.Lines); i++ {
-			chunk := norm.Lines[i : i+opts.MinLines]
-			h := hashChunk(chunk)
-
-			startOriginal := norm.LineNumbers[i]
-			endOriginal := norm.LineNumbers[i+opts.MinLines-1]
-
-			// Collect original (unnormalized) lines for display
-			origLines := make([]string, 0, endOriginal-startOriginal+1)
-			for ln := startOriginal; ln <= endOriginal && ln-1 < len(rawLines); ln++ {
-				origLines = append(origLines, rawLines[ln-1])
-			}
-
-			index[h] = append(index[h], domain.CloneInstance{
-				File:      f,
-				StartLine: startOriginal,
-				EndLine:   endOriginal,
-				Lines:     origLines,
-			})
-		}
-
+		tokenizedFiles = append(tokenizedFiles, tf)
 		scannedFiles++
-		helpers.Log.Debug().Str("file", f).Msg("scanned")
+		helpers.Log.Debug().Str("file", path).Int("tokens", len(tf.Tokens)).Msg("tokenized")
 	}
 
-	clones := buildClones(index, opts.MinLines)
+	clones := Detect(tokenizedFiles, minTokens)
 	duplicateLines := countDuplicateLines(clones)
 
 	return &domain.Report{
@@ -158,7 +138,7 @@ func collectFiles(root string, exclude []string, langFilter string) ([]string, e
 	return files, err
 }
 
-// isHiddenOrVendored skips common non-source directories.
+// isHiddenOrVendored returns true for directories that should be skipped.
 func isHiddenOrVendored(name string) bool {
 	if strings.HasPrefix(name, ".") {
 		return true
@@ -185,62 +165,20 @@ func matchesExcludes(path string, exclude []string) bool {
 	return false
 }
 
-// hashChunk produces a hex string hash of the given lines.
-func hashChunk(lines []string) string {
-	h := fnv.New64a()
-	for _, l := range lines {
-		_, _ = h.Write([]byte(l))
-		_, _ = h.Write([]byte("\n"))
+// DetectLanguage returns the Language for a file path, or nil if unsupported.
+func DetectLanguage(path string) *domain.Language {
+	ext := strings.ToLower(filepath.Ext(path))
+	for i := range domain.SupportedLanguages {
+		for _, e := range domain.SupportedLanguages[i].Extensions {
+			if e == ext {
+				return &domain.SupportedLanguages[i]
+			}
+		}
 	}
-	return fmt.Sprintf("%016x", h.Sum64())
+	return nil
 }
 
-// buildClones filters the index for entries with 2+ instances and deduplicates
-// overlapping windows within the same file.
-func buildClones(index map[string][]domain.CloneInstance, minLines int) []domain.Clone {
-	var clones []domain.Clone
-
-	for hash, instances := range index {
-		if len(instances) < 2 {
-			continue
-		}
-		// Deduplicate: keep only non-overlapping windows per file
-		deduped := deduplicateInstances(instances)
-		if len(deduped) < 2 {
-			continue
-		}
-		clones = append(clones, domain.Clone{
-			Hash:      hash,
-			LineCount: minLines,
-			Instances: deduped,
-		})
-	}
-
-	return clones
-}
-
-// deduplicateInstances removes overlapping windows in the same file,
-// keeping only the first occurrence of each overlapping group.
-func deduplicateInstances(instances []domain.CloneInstance) []domain.CloneInstance {
-	seen := make(map[string]bool)
-	var result []domain.CloneInstance
-
-	for _, inst := range instances {
-		key := fmt.Sprintf("%s:%d", inst.File, inst.StartLine)
-		if seen[key] {
-			continue
-		}
-		// Mark all lines in this instance's range as seen for this file
-		for ln := inst.StartLine; ln <= inst.EndLine; ln++ {
-			seen[fmt.Sprintf("%s:%d", inst.File, ln)] = true
-		}
-		result = append(result, inst)
-	}
-
-	return result
-}
-
-// countDuplicateLines counts the total number of lines involved in clones.
+// countDuplicateLines counts distinct (file, line) pairs across all clones.
 func countDuplicateLines(clones []domain.Clone) int {
 	type lineKey struct {
 		file string
