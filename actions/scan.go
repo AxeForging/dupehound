@@ -63,6 +63,7 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if c.IsSet("max-bucket") {
 		opts.MaxBucket = c.Int("max-bucket")
 	}
+	opts.Staged = c.Bool("staged")
 
 	services.ApplyConfigDefaults(&opts, cfg)
 
