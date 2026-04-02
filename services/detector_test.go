@@ -37,7 +37,7 @@ func TestDetect_Type1Clone(t *testing.T) {
 		makeFile("a.go", "package main\n\n"+block),
 		makeFile("b.go", "package main\n\n"+block),
 	}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected at least one clone, got 0")
 	}
@@ -65,7 +65,7 @@ func process() {
 	return output
 }
 `)
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("type-2 clone not detected: renamed variable 'result' → 'output' should still match")
 	}
@@ -88,7 +88,7 @@ func calc(a int, b int) int {
 	return result
 }
 `)
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("type-2 clone not detected: multiple renamed variables should still match")
 	}
@@ -146,7 +146,7 @@ func process() {
 	return x
 }
 `)
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("blocks that differ only by comments should be detected as clones")
 	}
@@ -169,7 +169,7 @@ func bigHelper() {
 }
 `
 	files := []TokenizedFile{makeFile("a.go", block), makeFile("b.go", block)}
-	clones := Detect(files, 5)
+	clones := Detect(files, 5, 1.0)
 
 	// Count clones that span the full helper function (≥8 lines).
 	// There should be exactly 1, not one per overlapping window.
@@ -206,7 +206,7 @@ func dup() {
 		makeFile("b.go", block),
 		makeFile("c.go", block),
 	}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected at least one 3-way clone")
 	}
@@ -229,7 +229,7 @@ func TestDetect_MinTokensThreshold(t *testing.T) {
 	// A 3-token block should not be reported with minTokens=20.
 	a := makeFile("a.go", "package main\nfunc a() { x := 1 }\n")
 	b := makeFile("b.go", "package main\nfunc b() { x := 1 }\n")
-	clones := Detect([]TokenizedFile{a, b}, 20)
+	clones := Detect([]TokenizedFile{a, b}, 20, 1.0)
 	// No clone should span more than the full file if there aren't 20 matching tokens.
 	for _, c := range clones {
 		if c.TokenCount > 20 {
@@ -244,7 +244,7 @@ func TestDetect_NoDuplicates(t *testing.T) {
 	a := makeFile("a.go", "package main\nfunc foo() { a()\nb()\nc() }\n")
 	b := makeFile("b.go", "package main\nfunc bar() { x()\ny()\nz() }\n")
 	// These have very different structure; with a large minTokens they shouldn't match.
-	clones := Detect([]TokenizedFile{a, b}, 15)
+	clones := Detect([]TokenizedFile{a, b}, 15, 1.0)
 	_ = clones // small files may share tiny windows; we just ensure no panic
 }
 
@@ -268,7 +268,7 @@ func second() {
 }
 `
 	files := []TokenizedFile{makeFile("a.go", src)}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected clone for repeated function body within same file")
 	}
@@ -304,7 +304,7 @@ func helper() {
 `
 	a := makeFile("a.go", src)
 	b := makeFile("b.go", src)
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected clones")
 	}
@@ -333,7 +333,7 @@ func helper() {
 `
 	a := makeRealFile(t, dir, "a.go", src)
 	b := makeRealFile(t, dir, "b.go", src)
-	clones := Detect([]TokenizedFile{a, b}, 5)
+	clones := Detect([]TokenizedFile{a, b}, 5, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected clones")
 	}
@@ -364,7 +364,7 @@ func TestDetect_Python_Type2Clone(t *testing.T) {
     notify(output)
     return output
 `, "python")
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("Python type-2 clone not detected")
 	}
@@ -382,7 +382,7 @@ func TestDetect_ZeroTokenFile_NoPanic(t *testing.T) {
 		makeFile("empty1.go", ""),
 		makeFile("empty2.go", ""),
 	}
-	clones := Detect(files, 5)
+	clones := Detect(files, 5, 1.0)
 	_ = clones // nil is expected; what matters is no panic
 }
 
@@ -390,7 +390,7 @@ func TestDetect_MinTokensLargerThanFile(t *testing.T) {
 	// When minTokens > token count of every file, no window can be formed.
 	a := makeFile("a.go", "package main\n")
 	b := makeFile("b.go", "package main\n")
-	clones := Detect([]TokenizedFile{a, b}, 1000)
+	clones := Detect([]TokenizedFile{a, b}, 1000, 1.0)
 	if len(clones) != 0 {
 		t.Errorf("expected 0 clones when minTokens > file size, got %d", len(clones))
 	}
@@ -412,7 +412,7 @@ func dup() {
 		makeFile("a.go", block), makeFile("b.go", block), makeFile("c.go", block),
 		makeFile("d.go", block), makeFile("e.go", block),
 	}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	found := false
 	for _, c := range clones {
 		if len(c.Instances) == 5 {
@@ -431,7 +431,7 @@ func TestDetect_ThreeCopiesInOneFile(t *testing.T) {
 	body := "\tx := compute()\n\tvalidate(x)\n\tstore(x)\n\tnotify(x)\n\treturn x\n"
 	src := "package main\nfunc a() {\n" + body + "}\nfunc b() {\n" + body + "}\nfunc c() {\n" + body + "}\n"
 	files := []TokenizedFile{makeFile("a.go", src)}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	found := false
 	for _, c := range clones {
 		if len(c.Instances) >= 2 {
@@ -457,7 +457,7 @@ func f() {
 `
 	a := makeFile("a.go", src)
 	b := makeFile("b.go", src)
-	clones := Detect([]TokenizedFile{a, b}, 5)
+	clones := Detect([]TokenizedFile{a, b}, 5, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected clones")
 	}
@@ -490,7 +490,7 @@ func process() {
     store(x)
     return x
 `, "python")
-	clones := Detect([]TokenizedFile{goFile, pyFile}, 10)
+	clones := Detect([]TokenizedFile{goFile, pyFile}, 10, 1.0)
 	// Go `func`/`:=` vs Python `def`/`=` differ in keyword text and operator text,
 	// so a full-function window should not match. Any clone reported must have ≥2 instances.
 	for _, c := range clones {
@@ -509,7 +509,7 @@ func TestDetect_Type1Clone_ClassifiedCorrectly(t *testing.T) {
 		makeFile("a.go", "package main\n\n"+block),
 		makeFile("b.go", "package main\n\n"+block),
 	}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected at least one clone")
 	}
@@ -543,7 +543,7 @@ func process() {
 	return output
 }
 `)
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected type-2 clone")
 	}
@@ -577,7 +577,7 @@ func config() {
 	return timeout
 }
 `)
-	clones := Detect([]TokenizedFile{a, b}, 10)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected type-2 clone for different literals")
 	}
@@ -593,7 +593,7 @@ func TestDetect_Type2Clone_SameFileInternalDuplicate(t *testing.T) {
 	body := "\tx := compute()\n\tvalidate(x)\n\tstore(x)\n\tnotify(x)\n\treturn x\n"
 	src := "package main\nfunc a() {\n" + body + "}\nfunc b() {\n" + body + "}\n"
 	files := []TokenizedFile{makeFile("a.go", src)}
-	clones := Detect(files, 10)
+	clones := Detect(files, 10, 1.0)
 	if len(clones) == 0 {
 		t.Fatal("expected clone")
 	}
@@ -612,13 +612,207 @@ func TestDetect_AllClonesHaveType(t *testing.T) {
 		makeFile("b.go", "package main\n\n"+block),
 		makeFile("c.go", "package main\n\n"+block),
 	}
-	clones := Detect(files, 5)
+	clones := Detect(files, 5, 1.0)
 	for _, c := range clones {
 		if c.Type == "" {
 			t.Error("clone has empty Type")
 		}
 		if c.Similarity <= 0 {
 			t.Errorf("clone has non-positive Similarity: %f", c.Similarity)
+		}
+	}
+}
+
+// --- Type-3 fuzzy detection ---
+
+func TestDetect_Type3_ExtraStatement(t *testing.T) {
+	// Two functions with mostly same structure but one has an extra if-block
+	// (different keyword structure breaks exact detection).
+	dir := t.TempDir()
+	a := makeRealFile(t, dir, "a.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	transform(x)
+	store(x)
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	b := makeRealFile(t, dir, "b.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	transform(x)
+	if x > 0 {
+		store(x)
+	}
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	clones := Detect([]TokenizedFile{a, b}, 10, 0.50)
+	var found bool
+	for _, c := range clones {
+		if c.Type == "type-3" {
+			found = true
+			if c.Similarity >= 1.0 {
+				t.Errorf("type-3 similarity should be < 1.0, got %f", c.Similarity)
+			}
+			if c.Similarity < 0.50 {
+				t.Errorf("type-3 similarity should be >= threshold, got %f", c.Similarity)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected type-3 clone for near-miss blocks with extra statement")
+	}
+}
+
+func TestDetect_Type3_SwappedStatement(t *testing.T) {
+	// Two functions with a for-loop in one replaced by a switch in the other.
+	// Structural difference breaks exact matching but most code is shared.
+	dir := t.TempDir()
+	a := makeRealFile(t, dir, "a.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	for i := range x {
+		transform(i)
+	}
+	store(x)
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	b := makeRealFile(t, dir, "b.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	switch x {
+	case 0:
+		transform(x)
+	}
+	store(x)
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	clones := Detect([]TokenizedFile{a, b}, 10, 0.50)
+	var found bool
+	for _, c := range clones {
+		if c.Type == "type-3" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected type-3 clone for near-miss blocks with swapped statements")
+	}
+}
+
+func TestDetect_Type3_CompletelyDifferent_NotDetected(t *testing.T) {
+	// Completely different code → no type-3 clone.
+	dir := t.TempDir()
+	a := makeRealFile(t, dir, "a.go", `package main
+func mathStuff() {
+	x := add(1, 2)
+	y := multiply(x, 3)
+	z := divide(y, 4)
+	result := subtract(z, 5)
+	return result
+}
+`)
+	b := makeRealFile(t, dir, "b.go", `package main
+func ioStuff() {
+	f := openFile("data.txt")
+	defer closeFile(f)
+	lines := readLines(f)
+	for _, line := range lines {
+		processLine(line)
+	}
+}
+`)
+	clones := Detect([]TokenizedFile{a, b}, 10, 0.70)
+	for _, c := range clones {
+		if c.Type == "type-3" {
+			t.Error("completely different code should not produce a type-3 clone")
+		}
+	}
+}
+
+func TestDetect_Similarity1_DisablesFuzzy(t *testing.T) {
+	// With minSimilarity=1.0, only exact matches are returned (no type-3).
+	dir := t.TempDir()
+	a := makeRealFile(t, dir, "a.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	transform(x)
+	store(x)
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	b := makeRealFile(t, dir, "b.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	transform(x)
+	if x > 0 {
+		store(x)
+	}
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	clones := Detect([]TokenizedFile{a, b}, 10, 1.0)
+	for _, c := range clones {
+		if c.Type == "type-3" {
+			t.Error("similarity=1.0 should disable type-3 detection")
+		}
+	}
+}
+
+func TestDetect_Type3_SimilarityInRange(t *testing.T) {
+	// All type-3 clones must have similarity in [threshold, 1.0).
+	dir := t.TempDir()
+	a := makeRealFile(t, dir, "a.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	transform(x)
+	store(x)
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	b := makeRealFile(t, dir, "b.go", `package main
+func process() {
+	x := compute()
+	validate(x)
+	transform(x)
+	if x > 0 {
+		store(x)
+	}
+	notify(x)
+	log(x)
+	return x
+}
+`)
+	threshold := 0.50
+	clones := Detect([]TokenizedFile{a, b}, 10, threshold)
+	for _, c := range clones {
+		if c.Type == "type-3" {
+			if c.Similarity < threshold || c.Similarity >= 1.0 {
+				t.Errorf("type-3 similarity %f should be in [%f, 1.0)", c.Similarity, threshold)
+			}
 		}
 	}
 }

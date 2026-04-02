@@ -56,6 +56,9 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if c.IsSet("language") {
 		opts.Language = c.String("language")
 	}
+	if c.IsSet("similarity") {
+		opts.MinSimilarity = c.Float64("similarity")
+	}
 
 	services.ApplyConfigDefaults(&opts, cfg)
 
