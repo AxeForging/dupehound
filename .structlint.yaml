@@ -1,0 +1,43 @@
+allowed_paths:
+  - actions/
+  - domain/
+  - services/
+  - helpers/
+  - integration/
+  - docs/
+  - .github/
+
+disallowed_paths:
+  - vendor/
+  - node_modules/
+  - .git/
+
+required_paths:
+  - actions
+  - domain
+  - services
+  - helpers
+
+allowed_file_patterns:
+  - "*.go"
+  - "*.mod"
+  - "*.sum"
+  - "*.yaml"
+  - "*.yml"
+  - "*.md"
+  - ".gitignore"
+  - "Makefile"
+  - "LICENSE"
+
+disallowed_file_patterns:
+  - "*.env*"
+  - "*.key"
+  - "*.pem"
+  - "*.log"
+  - ".DS_Store"
+
+required_files:
+  - go.mod
+  - README.md
+  - .gitignore
+  - main.go

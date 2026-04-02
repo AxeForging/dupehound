@@ -1,0 +1,59 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+      - 386
+      - arm
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.BuildTime={{.Date}}
+      - -X main.GitCommit={{.FullCommit}}
+    binary: dupehound-{{.Os}}-{{.Arch}}
+    ignore:
+      - goos: windows
+        goarch: arm
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "dupehound-{{.Os}}-{{.Arch}}"
+    files:
+      - README.md
+      - LICENSE
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  github:
+    owner: AxeForging
+    name: dupehound
+  draft: false
+  prerelease: auto
