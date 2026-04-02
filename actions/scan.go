@@ -71,16 +71,13 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		opts.Path = "."
 	}
 	if opts.MinTokens <= 0 {
-		opts.MinTokens = c.Int("min-tokens")
-	}
-	if opts.MinTokens <= 0 {
-		return helpers.ErrInvalidMinTokens
+		opts.MinTokens = 50
 	}
 	if opts.MinSimilarity == 0 {
-		opts.MinSimilarity = c.Float64("similarity")
+		opts.MinSimilarity = 0.70
 	}
 	if opts.MaxBucket == 0 {
-		opts.MaxBucket = c.Int("max-bucket")
+		opts.MaxBucket = 5000
 	}
 
 	// Format and output: CLI wins, then config, then built-in default ("text").
