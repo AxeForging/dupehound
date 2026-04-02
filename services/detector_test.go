@@ -1,12 +1,15 @@
 package services
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/AxeForging/dupehound/domain"
 )
 
 // makeFile is a helper that tokenizes a Go source string into a TokenizedFile.
+// Uses a synthetic path — preview lines won't load (use makeRealFile for that).
 func makeFile(path, src string) TokenizedFile {
 	return BuildTokenizedFile(path, src, goL())
 }
@@ -14,6 +17,16 @@ func makeFile(path, src string) TokenizedFile {
 // makeFileLang tokenizes with a specific language.
 func makeFileLang(path, src string, lang string) TokenizedFile {
 	return BuildTokenizedFile(path, src, LangForName(lang))
+}
+
+// makeRealFile writes src to a temp file and returns a TokenizedFile with a real path.
+func makeRealFile(t *testing.T, dir, name, src string) TokenizedFile {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return BuildTokenizedFile(p, src, goL())
 }
 
 // --- Type-1 clones (exact structural copy) ---
@@ -310,6 +323,7 @@ func helper() {
 // --- Preview lines are original source ---
 
 func TestDetect_PreviewLinesAreOriginalSource(t *testing.T) {
+	dir := t.TempDir()
 	src := `package main
 func helper() {
 	// this comment should appear in preview
@@ -317,8 +331,8 @@ func helper() {
 	return x
 }
 `
-	a := makeFile("a.go", src)
-	b := makeFile("b.go", src)
+	a := makeRealFile(t, dir, "a.go", src)
+	b := makeRealFile(t, dir, "b.go", src)
 	clones := Detect([]TokenizedFile{a, b}, 5)
 	if len(clones) == 0 {
 		t.Fatal("expected clones")
