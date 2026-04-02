@@ -53,6 +53,12 @@ var exitZeroFlag = cli.BoolFlag{
 	Usage: "Always exit 0 even when clones are found (useful for reporting pipelines)",
 }
 
+var maxBucketFlag = cli.IntFlag{
+	Name:  "max-bucket",
+	Value: 5000,
+	Usage: "Max candidates per fuzzy hash bucket (higher = slower but more thorough type-3 detection, 0 = unlimited)",
+}
+
 var similarityFlag = cli.Float64Flag{
 	Name:  "similarity",
 	Value: 0.70,

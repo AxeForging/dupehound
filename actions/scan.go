@@ -59,6 +59,9 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if c.IsSet("similarity") {
 		opts.MinSimilarity = c.Float64("similarity")
 	}
+	if c.IsSet("max-bucket") {
+		opts.MaxBucket = c.Int("max-bucket")
+	}
 
 	services.ApplyConfigDefaults(&opts, cfg)
 

@@ -17,6 +17,7 @@ type ScanOptions struct {
 	Exclude       []string
 	Language      string
 	MinSimilarity float64 // minimum Jaccard similarity for type-3 detection (0.50–1.00)
+	MaxBucket     int     // max blocks per fuzzy bucket (0 = default 500)
 }
 
 // ScannerService performs code duplication detection.
@@ -82,7 +83,11 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	if minSimilarity <= 0 {
 		minSimilarity = 0.70
 	}
-	clones := Detect(tokenizedFiles, minTokens, minSimilarity)
+	clones := DetectWithOptions(tokenizedFiles, DetectOptions{
+		MinTokens:     minTokens,
+		MinSimilarity: minSimilarity,
+		MaxBucket:     opts.MaxBucket,
+	})
 	duplicateLines := countDuplicateLines(clones)
 
 	return &domain.Report{

@@ -37,18 +37,38 @@ type globalPos struct {
 // Detect finds all clone groups (type-1, type-2, and type-3) in the given token sequences.
 // minTokens is the minimum window size. minSimilarity is the Jaccard threshold for type-3
 // detection (set to 1.0 to disable type-3).
+// DetectOptions holds parameters for clone detection.
+type DetectOptions struct {
+	MinTokens     int
+	MinSimilarity float64
+	MaxBucket     int // max blocks per fuzzy mini-hash bucket (0 = default 500)
+}
+
 func Detect(files []TokenizedFile, minTokens int, minSimilarity float64) []domain.Clone {
-	if len(files) == 0 || minTokens <= 0 {
+	return DetectWithOptions(files, DetectOptions{
+		MinTokens:     minTokens,
+		MinSimilarity: minSimilarity,
+	})
+}
+
+// DetectWithOptions finds all clone groups with full control over detection parameters.
+func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone {
+	if len(files) == 0 || opts.MinTokens <= 0 {
 		return nil
 	}
 
-	exact := detectExact(files, minTokens)
+	exact := detectExact(files, opts.MinTokens)
 
-	if minSimilarity >= 1.0 {
+	if opts.MinSimilarity >= 1.0 {
 		return exact
 	}
 
-	fuzzy := detectFuzzy(files, minTokens, minSimilarity, exact)
+	maxBucket := opts.MaxBucket
+	if maxBucket <= 0 {
+		maxBucket = 5000
+	}
+
+	fuzzy := detectFuzzy(files, opts.MinTokens, opts.MinSimilarity, maxBucket, exact)
 	return append(exact, fuzzy...)
 }
 
@@ -209,7 +229,7 @@ func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 // detectFuzzy finds type-3 near-miss clones using mini-window Jaccard similarity.
 // It skips blocks already covered by exact clones.
 // Requires minTokens >= 10 to produce meaningful mini-windows; returns nil otherwise.
-func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactClones []domain.Clone) []domain.Clone {
+func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone) []domain.Clone {
 	if minTokens < 10 {
 		return nil
 	}
@@ -305,20 +325,18 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 	seen := make(map[pair]bool)
 	var pairs []pair
 
-	const maxBucketSize = 500 // cap per mini-hash to bound O(n²) pair generation
-
 	for _, indices := range miniIndex {
 		if len(indices) < 2 {
 			continue
 		}
 		bucket := indices
-		if len(bucket) > maxBucketSize {
+		if len(bucket) > maxBucket {
 			helpers.Log.Warn().
 				Int("total_blocks", len(bucket)).
-				Int("evaluated", maxBucketSize).
-				Int("skipped", len(bucket)-maxBucketSize).
+				Int("evaluated", maxBucket).
+				Int("skipped", len(bucket)-maxBucket).
 				Msg("fuzzy bucket truncated: common mini-window pattern has too many candidates, some near-miss clones may not be reported")
-			bucket = bucket[:maxBucketSize]
+			bucket = bucket[:maxBucket]
 		}
 		for i := 0; i < len(bucket); i++ {
 			for j := i + 1; j < len(bucket); j++ {
@@ -353,7 +371,20 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 	}
 	var fuzzyMatches []fuzzyClone
 
-	for _, p := range pairs {
+	if len(pairs) > 1000 {
+		helpers.Log.Info().
+			Int("pairs", len(pairs)).
+			Msg("evaluating fuzzy candidate pairs — this may take a moment on large codebases")
+	}
+
+	for i, p := range pairs {
+		if len(pairs) > 10000 && i > 0 && i%10000 == 0 {
+			helpers.Log.Info().
+				Int("evaluated", i).
+				Int("total", len(pairs)).
+				Int("matches_so_far", len(fuzzyMatches)).
+				Msg("fuzzy detection progress")
+		}
 		ba, bb := blocks[p.a], blocks[p.b]
 		sim := jaccardSimilarity(ba.miniSet, bb.miniSet)
 		if sim >= threshold && sim < 1.0 {
