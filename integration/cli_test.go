@@ -502,6 +502,133 @@ func TestText_IncludesDuplicationPercentage(t *testing.T) {
 	}
 }
 
+// --- Staged flag ---
+
+func initTestGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	gitRun := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v failed: %v\n%s", args, err, string(out))
+		}
+	}
+	gitRun("init")
+	gitRun("config", "user.email", "test@test.com")
+	gitRun("config", "user.name", "test")
+	writeFile(t, dir, ".gitkeep", "")
+	gitRun("add", ".")
+	gitRun("commit", "-m", "init")
+}
+
+func gitAdd(t *testing.T, dir, name string) {
+	t.Helper()
+	cmd := exec.Command("git", "add", name)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add %s: %v\n%s", name, err, string(out))
+	}
+}
+
+func TestStaged_StagedDuplicate_ExitsOne(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	initTestGitRepo(t, dir)
+
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+	gitAdd(t, dir, "a.go")
+	gitAdd(t, dir, "b.go")
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--staged")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected exit 1 when staged files have clones, got 0")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestStaged_NoStagedFiles_ExitsZero(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	initTestGitRepo(t, dir)
+
+	// Files exist but are NOT staged.
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--staged")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("expected exit 0 with no staged files, got: %v (code %d)\n%s",
+			err, cmd.ProcessState.ExitCode(), string(out))
+	}
+}
+
+func TestStaged_OnlyStagedCloneReported(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	initTestGitRepo(t, dir)
+
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+
+	// Commit a.go and b.go first (existing code).
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\nfunc other() {\n\ty := 1\n}\n")
+	gitAdd(t, dir, "a.go")
+	gitAdd(t, dir, "b.go")
+	cmd := exec.Command("git", "commit", "-m", "add files")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"GIT_AUTHOR_NAME=test", "GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=test", "GIT_COMMITTER_EMAIL=test@test.com",
+	)
+	cmd.CombinedOutput() //nolint:errcheck
+
+	// Now stage c.go which duplicates a.go — only this clone should be reported.
+	writeFile(t, dir, "c.go", "package main\n\n"+block)
+	gitAdd(t, dir, "c.go")
+
+	cmd2 := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--staged", "--format", "json", "--exit-zero")
+	out, err := cmd2.Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, string(out))
+	}
+
+	// Should have clones — c.go duplicates a.go.
+	if report.TotalClones == 0 {
+		t.Fatal("expected clones between staged c.go and existing a.go")
+	}
+
+	// All reported clones must involve c.go (the staged file).
+	for _, c := range report.Clones {
+		hasStagedFile := false
+		for _, inst := range c.Instances {
+			if strings.HasSuffix(inst.File, "c.go") {
+				hasStagedFile = true
+			}
+		}
+		if !hasStagedFile {
+			t.Errorf("clone %s has no instance in staged file c.go", c.Hash)
+		}
+	}
+}
+
 // --- Config file ---
 
 func TestConfigFile_SettingsRespected(t *testing.T) {

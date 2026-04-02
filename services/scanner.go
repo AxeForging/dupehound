@@ -20,6 +20,7 @@ type ScanOptions struct {
 	Language      string
 	MinSimilarity float64 // minimum Jaccard similarity for type-3 detection (0.50–1.00)
 	MaxBucket     int     // max blocks per fuzzy bucket (0 = default 500)
+	Staged        bool    // only report clones involving git-staged files
 }
 
 // ScannerService performs code duplication detection.
@@ -95,6 +96,30 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		MaxBucket:     opts.MaxBucket,
 	})
 	clones = deduplicateOverlapping(clones)
+
+	// When --staged is active, filter to clones touching staged files.
+	if opts.Staged {
+		absPath, err := filepath.Abs(opts.Path)
+		if err != nil {
+			absPath = opts.Path
+		}
+		staged, err := StagedFiles(absPath)
+		if err != nil {
+			return nil, err
+		}
+		if len(staged) == 0 {
+			helpers.Log.Info().Msg("no staged files found")
+			clones = nil
+		} else {
+			helpers.Log.Info().Int("staged_files", len(staged)).Msg("filtering clones to staged files")
+			stagedSet := make(map[string]bool, len(staged))
+			for _, f := range staged {
+				stagedSet[f] = true
+			}
+			clones = filterStagedClones(clones, stagedSet)
+		}
+	}
+
 	duplicateLines := countDuplicateLines(clones)
 
 	totalLines := 0
@@ -253,6 +278,20 @@ func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
 	}
 
 	return kept
+}
+
+// filterStagedClones keeps only clones where at least one instance is in a staged file.
+func filterStagedClones(clones []domain.Clone, stagedSet map[string]bool) []domain.Clone {
+	var filtered []domain.Clone
+	for _, c := range clones {
+		for _, inst := range c.Instances {
+			if stagedSet[inst.File] {
+				filtered = append(filtered, c)
+				break
+			}
+		}
+	}
+	return filtered
 }
 
 // countLines returns the number of lines in a string.

@@ -65,6 +65,11 @@ var similarityFlag = cli.Float64Flag{
 	Usage: "Minimum similarity for type-3 detection (0.50–1.00; 1.0 disables type-3)",
 }
 
+var stagedFlag = cli.BoolFlag{
+	Name:  "staged",
+	Usage: "Only report clones involving git-staged files (for pre-commit hooks)",
+}
+
 var minDuplicationFlag = cli.Float64Flag{
 	Name:  "min-duplication",
 	Value: 0,
