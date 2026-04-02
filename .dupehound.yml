@@ -3,3 +3,4 @@ scan:
     - "*_test.go"
     - "*.spec.ts"
     - "*.cy.ts"
+    - "tokenizer.go"
