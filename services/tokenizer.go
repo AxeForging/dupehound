@@ -435,6 +435,240 @@ var langKeywords = map[string]map[string]bool{
 	),
 }
 
+// funcKeywords maps language names to the keywords that introduce function/method bodies.
+var funcKeywords = map[string]map[string]bool{
+	"go":         strSet("func"),
+	"python":     strSet("def"),
+	"javascript": strSet("function"),
+	"typescript": strSet("function"),
+	"java":       strSet(), // uses brace-depth heuristic (methods are inside class braces)
+	"kotlin":     strSet("fun"),
+	"rust":       strSet("fn"),
+	"c":          strSet(), // uses brace-depth heuristic
+	"cpp":        strSet(), // uses brace-depth heuristic
+	"csharp":     strSet(), // uses brace-depth heuristic
+	"swift":      strSet("func"),
+	"scala":      strSet("def"),
+	"php":        strSet("function"),
+	"ruby":       strSet("def"),
+	"shell":      strSet("function"),
+	"sql":        strSet("FUNCTION", "PROCEDURE", "function", "procedure"),
+	"lua":        strSet("function"),
+	"elixir":     strSet("def", "defp", "defmacro", "defmacrop"),
+	"dart":       strSet(), // uses brace-depth heuristic
+	"r":          strSet("function"),
+}
+
+// markFunctionBodies returns a per-token boolean slice indicating whether each
+// token is inside a function or method body. This is used to restrict clone
+// detection to logic (functions/methods) and skip data declarations, imports,
+// struct definitions, and other top-level boilerplate.
+//
+// Strategy per language family:
+//   - Brace-based with func keywords (Go, Rust, Swift, etc.): scan for the
+//     keyword, find the opening {, track depth to matching }.
+//   - Brace-based without func keywords (Java, C, C++, C#, Dart): treat any
+//     top-level brace block that contains statements as a potential function.
+//     Specifically, any { at brace depth 0 or 1 (to handle class > method)
+//     marks its contents as in-function.
+//   - Python: scan for def keyword, mark from the colon through the next def
+//     or dedent (approximated by next token at same or lesser line offset).
+//   - Ruby/Elixir: scan for def, mark through matching end keyword.
+func markFunctionBodies(tokens []Token, lang *domain.Language) []bool {
+	n := len(tokens)
+	inFunc := make([]bool, n)
+
+	if lang == nil || n == 0 {
+		// No language info — mark everything as in-function (no filtering).
+		for i := range inFunc {
+			inFunc[i] = true
+		}
+		return inFunc
+	}
+
+	switch lang.Name {
+	case "python":
+		markPythonFunctions(tokens, inFunc)
+	case "ruby":
+		markDefEndFunctions(tokens, inFunc, "def", "end")
+	case "elixir":
+		markDefEndFunctions(tokens, inFunc, "", "end") // uses funcKeywords set
+	default:
+		markBraceFunctions(tokens, inFunc, lang)
+	}
+
+	return inFunc
+}
+
+// markBraceFunctions handles brace-based languages.
+func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
+	fkws := funcKeywords[lang.Name]
+	hasFuncKeywords := len(fkws) > 0
+
+	n := len(tokens)
+	if hasFuncKeywords {
+		// Languages with explicit func keywords: find keyword, then opening {, then match }.
+		for i := 0; i < n; i++ {
+			t := tokens[i]
+			if t.Kind != TokKeyword || !fkws[t.Text] {
+				continue
+			}
+			// Find the opening brace after this keyword.
+			braceIdx := -1
+			for j := i + 1; j < n; j++ {
+				if tokens[j].Kind == TokOperator && tokens[j].Text == "{" {
+					braceIdx = j
+					break
+				}
+				// Stop searching if we hit another function keyword or semicolon.
+				if tokens[j].Kind == TokKeyword && fkws[tokens[j].Text] {
+					break
+				}
+			}
+			if braceIdx < 0 {
+				continue
+			}
+			// Track brace depth from the opening brace.
+			depth := 1
+			for j := braceIdx + 1; j < n && depth > 0; j++ {
+				if tokens[j].Kind == TokOperator {
+					switch tokens[j].Text {
+					case "{":
+						depth++
+					case "}":
+						depth--
+					}
+				}
+				if depth > 0 {
+					inFunc[j] = true
+				}
+			}
+		}
+	} else {
+		// Languages without func keywords (Java, C, C++, C#, Dart):
+		// Any brace block entered at depth 0 or 1 marks its contents.
+		// depth 0 → top-level function (C) or class body (Java)
+		// depth 1 → method inside a class
+		depth := 0
+		funcDepth := -1 // depth at which we entered the "function" block
+		for i := 0; i < n; i++ {
+			if tokens[i].Kind == TokOperator {
+				switch tokens[i].Text {
+				case "{":
+					if depth <= 1 && funcDepth < 0 {
+						funcDepth = depth
+					}
+					depth++
+				case "}":
+					depth--
+					if depth == funcDepth {
+						funcDepth = -1
+					}
+				}
+			}
+			if funcDepth >= 0 && depth > funcDepth {
+				inFunc[i] = true
+			}
+		}
+	}
+}
+
+// markPythonFunctions marks tokens after `def name(...):` as in-function.
+// Since we don't have indentation info in the token stream, we mark from
+// the colon after def through to the next def/class at the same scope or EOF.
+func markPythonFunctions(tokens []Token, inFunc []bool) {
+	n := len(tokens)
+	i := 0
+	for i < n {
+		t := tokens[i]
+		if t.Kind == TokKeyword && (t.Text == "def" || t.Text == "async") {
+			// For async, check next token is def.
+			start := i
+			if t.Text == "async" {
+				if i+1 < n && tokens[i+1].Kind == TokKeyword && tokens[i+1].Text == "def" {
+					i++
+				} else {
+					i++
+					continue
+				}
+			}
+			// Find the colon that ends the signature.
+			colonIdx := -1
+			for j := start; j < n; j++ {
+				if tokens[j].Kind == TokOperator && tokens[j].Text == ":" {
+					colonIdx = j
+					break
+				}
+			}
+			if colonIdx < 0 {
+				i++
+				continue
+			}
+			// Mark everything after the colon until next def/class at same or lesser indentation.
+			defLine := tokens[start].Line
+			for j := colonIdx + 1; j < n; j++ {
+				// Stop at next top-level def or class (heuristic: if the def/class
+				// is on a line that's <= the original def line's indent, we stop).
+				if tokens[j].Kind == TokKeyword && (tokens[j].Text == "def" || tokens[j].Text == "class") {
+					// Same or earlier line offset means we've left the function.
+					// Since we don't have indentation, use a simpler heuristic:
+					// if there's a blank-line gap (line difference > 1 from previous token),
+					// this might be a new top-level definition.
+					if j > 0 && tokens[j].Line > tokens[j-1].Line+1 {
+						i = j
+						break
+					}
+				}
+				inFunc[j] = true
+				if j == n-1 {
+					i = n
+				}
+			}
+			_ = defLine
+		}
+		i++
+	}
+}
+
+// markDefEndFunctions marks tokens between def and end keywords (Ruby, Elixir).
+func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) {
+	defKeywords := map[string]bool{"def": true}
+	if defKw != "" {
+		defKeywords = map[string]bool{defKw: true}
+	}
+	// Elixir has multiple def-like keywords.
+	if defKw == "" {
+		defKeywords = map[string]bool{
+			"def": true, "defp": true, "defmacro": true, "defmacrop": true,
+		}
+	}
+	nestKeywords := map[string]bool{
+		"do": true, "class": true, "module": true,
+		"if": true, "case": true, "cond": true,
+	}
+	n := len(tokens)
+	for i := 0; i < n; i++ {
+		t := tokens[i]
+		if t.Kind != TokKeyword || !defKeywords[t.Text] {
+			continue
+		}
+		// Find matching end keyword, tracking nested def/end/do pairs.
+		depth := 1
+		for j := i + 1; j < n && depth > 0; j++ {
+			if tokens[j].Kind == TokKeyword {
+				if defKeywords[tokens[j].Text] || nestKeywords[tokens[j].Text] {
+					depth++
+				} else if tokens[j].Text == endKw {
+					depth--
+				}
+			}
+			if depth > 0 {
+				inFunc[j] = true
+			}
+		}
+	}
+}
+
 // strSet converts a variadic list of strings into a bool map.
 func strSet(words ...string) map[string]bool {
 	m := make(map[string]bool, len(words))

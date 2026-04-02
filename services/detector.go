@@ -18,13 +18,16 @@ import (
 type TokenizedFile struct {
 	Path   string
 	Tokens []Token // normalized token sequence (no newlines)
+	InFunc []bool  // per-token: true if inside a function/method body
 }
 
 // BuildTokenizedFile tokenizes a source file and returns a TokenizedFile.
 func BuildTokenizedFile(path, content string, lang *domain.Language) TokenizedFile {
+	tokens := TokenizeFile(content, lang)
 	return TokenizedFile{
 		Path:   path,
-		Tokens: TokenizeFile(content, lang),
+		Tokens: tokens,
+		InFunc: markFunctionBodies(tokens, lang),
 	}
 }
 
@@ -75,11 +78,15 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone
 // detectExact finds type-1 and type-2 clones using hash-based sliding windows.
 func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
+	// Skip windows that are not fully inside a function body.
 	posToHash := make([][]uint64, len(files))
 	for fi, tf := range files {
 		n := len(tf.Tokens)
 		hashes := make([]uint64, n)
 		for i := 0; i+minTokens <= n; i++ {
+			if !windowInFunc(tf.InFunc, i, minTokens) {
+				continue
+			}
 			hashes[i] = hashWindow(tf.Tokens[i : i+minTokens])
 		}
 		posToHash[fi] = hashes
@@ -280,6 +287,11 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 	for fi, tf := range files {
 		n := len(tf.Tokens)
 		for pos := 0; pos+minTokens <= n; pos++ {
+			// Skip blocks not fully inside a function body.
+			if !windowInFunc(tf.InFunc, pos, minTokens) {
+				continue
+			}
+
 			startLine := tf.Tokens[pos].Line
 			endIdx := pos + minTokens - 1
 			if endIdx >= n {
@@ -481,6 +493,24 @@ func jaccardSimilarity(a, b map[uint64]bool) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// windowInFunc returns true if all tokens in the window [pos, pos+size) are
+// inside a function body. Returns true if InFunc is nil (no filtering).
+func windowInFunc(inFunc []bool, pos, size int) bool {
+	if len(inFunc) == 0 {
+		return true
+	}
+	end := pos + size
+	if end > len(inFunc) {
+		end = len(inFunc)
+	}
+	for i := pos; i < end; i++ {
+		if !inFunc[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // classifyClone determines the clone type and similarity by comparing
