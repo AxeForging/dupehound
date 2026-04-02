@@ -776,3 +776,79 @@ func TestCloneType_MixedThreeWay_ClassifiedAsType2(t *testing.T) {
 		}
 	}
 }
+
+// --- Type-3 fuzzy detection ---
+
+func TestType3_CLIDetectsNearMiss(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tstore(x)\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
+	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tif x > 0 {\n\t\tstore(x)\n\t}\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, string(out))
+	}
+	var foundType3 bool
+	for _, c := range report.Clones {
+		if c.Type == "type-3" {
+			foundType3 = true
+			if c.Similarity >= 1.0 || c.Similarity < 0.50 {
+				t.Errorf("type-3 similarity should be in [0.50, 1.0), got %f", c.Similarity)
+			}
+		}
+	}
+	if !foundType3 {
+		t.Error("expected type-3 clone for near-miss blocks via CLI")
+	}
+}
+
+func TestType3_Similarity1_Suppresses(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tstore(x)\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
+	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tif x > 0 {\n\t\tstore(x)\n\t}\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--similarity", "1.0", "--format", "json").Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, string(out))
+	}
+	for _, c := range report.Clones {
+		if c.Type == "type-3" {
+			t.Error("--similarity 1.0 should suppress type-3 clones")
+		}
+	}
+}
+
+func TestType3_JSONOutput_HasType3(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tstore(x)\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
+	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tif x > 0 {\n\t\tstore(x)\n\t}\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, string(out))
+	}
+	var found bool
+	for _, c := range report.Clones {
+		if c.Type == "type-3" && c.Similarity > 0 && c.Similarity < 1.0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected JSON output with type-3 clone and fractional similarity")
+	}
+}

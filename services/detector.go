@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -32,17 +33,27 @@ type globalPos struct {
 	Pos     int // index into the file's token slice
 }
 
-// Detect finds all maximal clone groups in the given token sequences.
-// minTokens is the minimum window size.
-// Each returned Clone contains all instances of the same structural block.
-func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
+// Detect finds all clone groups (type-1, type-2, and type-3) in the given token sequences.
+// minTokens is the minimum window size. minSimilarity is the Jaccard threshold for type-3
+// detection (set to 1.0 to disable type-3).
+func Detect(files []TokenizedFile, minTokens int, minSimilarity float64) []domain.Clone {
 	if len(files) == 0 || minTokens <= 0 {
 		return nil
 	}
 
+	exact := detectExact(files, minTokens)
+
+	if minSimilarity >= 1.0 {
+		return exact
+	}
+
+	fuzzy := detectFuzzy(files, minTokens, minSimilarity, exact)
+	return append(exact, fuzzy...)
+}
+
+// detectExact finds type-1 and type-2 clones using hash-based sliding windows.
+func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
-	// posToHash[fi][i] = hash of files[fi].Tokens[i:i+minTokens]
-	// 0 means window is out of range (valid hashes are extremely unlikely to be 0).
 	posToHash := make([][]uint64, len(files))
 	for fi, tf := range files {
 		n := len(tf.Tokens)
@@ -99,11 +110,6 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 			continue
 		}
 
-		// Collect group members.
-		// Strategy:
-		//   1. Cross-file: take the first uncovered position from each distinct file.
-		//   2. Same-file fallback: if only one file has this hash, take two non-overlapping
-		//      positions from that file (to detect internal duplicates within one file).
 		allGroup := hashIndex[cand.Hash]
 
 		// Group positions by file.
@@ -122,12 +128,10 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 		var starts []globalPos
 
 		if len(byFile) >= 2 {
-			// Cross-file: one representative per file (the first uncovered position).
 			for _, fps := range byFile {
 				starts = append(starts, fps[0])
 			}
 		} else {
-			// Same-file: need two non-overlapping positions (≥ minTokens apart).
 			for _, fps := range byFile {
 				if len(fps) < 2 {
 					continue
@@ -147,7 +151,6 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 		}
 
 		// Step 5: extend forward greedily.
-		// A group can be extended by 1 if all members' next window share the same hash.
 		extLen := 0
 		for {
 			var nextHash uint64
@@ -172,38 +175,15 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 			extLen++
 		}
 
-		// Total tokens covered by this maximal block.
 		totalTokens := minTokens + extLen
 
-		// Mark all positions in this block as covered.
 		for _, s := range starts {
 			for k := 0; k <= extLen; k++ {
 				covered[globalPos{s.FileIdx, s.Pos + k}] = true
 			}
 		}
 
-		// Build clone instances with original line ranges.
-		// Preview lines are loaded lazily from disk to avoid holding all
-		// source content in memory during detection.
-		instances := make([]domain.CloneInstance, 0, len(starts))
-		for _, s := range starts {
-			toks := files[s.FileIdx].Tokens
-			startLine := toks[s.Pos].Line
-			endIdx := s.Pos + totalTokens - 1
-			if endIdx >= len(toks) {
-				endIdx = len(toks) - 1
-			}
-			endLine := toks[endIdx].Line
-
-			preview := loadPreviewLines(files[s.FileIdx].Path, startLine, endLine)
-
-			instances = append(instances, domain.CloneInstance{
-				File:      files[s.FileIdx].Path,
-				StartLine: startLine,
-				EndLine:   endLine,
-				Lines:     preview,
-			})
-		}
+		instances := buildInstances(files, starts, totalTokens)
 
 		lineCount := 0
 		if len(instances) > 0 {
@@ -225,11 +205,246 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 	return clones
 }
 
+// detectFuzzy finds type-3 near-miss clones using mini-window Jaccard similarity.
+// It skips blocks already covered by exact clones.
+// Requires minTokens >= 10 to produce meaningful mini-windows; returns nil otherwise.
+func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactClones []domain.Clone) []domain.Clone {
+	if minTokens < 10 {
+		return nil
+	}
+
+	miniSize := int(math.Ceil(float64(minTokens) / 3))
+	if miniSize < 2 {
+		miniSize = 2
+	}
+
+	// Build set of line ranges already covered by exact detection, keyed by file path.
+	type lineRange struct {
+		start, end int
+	}
+	exactCovered := make(map[string][]lineRange)
+	for _, c := range exactClones {
+		for _, inst := range c.Instances {
+			exactCovered[inst.File] = append(exactCovered[inst.File], lineRange{inst.StartLine, inst.EndLine})
+		}
+	}
+	isExactCovered := func(file string, start, end int) bool {
+		for _, r := range exactCovered[file] {
+			// Fully contained: the block is entirely within an exact clone.
+			if start >= r.start && end <= r.end {
+				return true
+			}
+		}
+		return false
+	}
+
+	// blockKey identifies a unique block position (file + token start index).
+	type blockKey struct {
+		fileIdx int
+		pos     int
+	}
+
+	// For each file, build mini-window hash sets for each block-sized window.
+	// A "block" is a minTokens-wide token window at each position.
+	type blockInfo struct {
+		key       blockKey
+		miniSet   map[uint64]bool
+		startLine int
+		endLine   int
+	}
+
+	var blocks []blockInfo
+	miniIndex := make(map[uint64][]int) // mini-hash → block indices in `blocks`
+
+	for fi, tf := range files {
+		n := len(tf.Tokens)
+		for pos := 0; pos+minTokens <= n; pos++ {
+			startLine := tf.Tokens[pos].Line
+			endIdx := pos + minTokens - 1
+			if endIdx >= n {
+				endIdx = n - 1
+			}
+			endLine := tf.Tokens[endIdx].Line
+
+			// Skip blocks already covered by exact detection.
+			if isExactCovered(tf.Path, startLine, endLine) {
+				continue
+			}
+
+			// Build mini-window hash set for this block.
+			// Uses hashWindowFull (includes OrigText) so that different
+			// identifiers/literals produce different mini-hashes,
+			// enabling meaningful Jaccard comparison.
+			miniSet := make(map[uint64]bool)
+			for i := pos; i+miniSize <= pos+minTokens; i++ {
+				h := hashWindowFull(tf.Tokens[i : i+miniSize])
+				if h != 0 {
+					miniSet[h] = true
+				}
+			}
+
+			idx := len(blocks)
+			blocks = append(blocks, blockInfo{
+				key:       blockKey{fi, pos},
+				miniSet:   miniSet,
+				startLine: startLine,
+				endLine:   endLine,
+			})
+
+			for h := range miniSet {
+				miniIndex[h] = append(miniIndex[h], idx)
+			}
+		}
+	}
+
+	// Find candidate pairs: blocks sharing ≥1 mini-window hash.
+	type pair struct {
+		a, b int
+	}
+	seen := make(map[pair]bool)
+	var pairs []pair
+
+	for _, indices := range miniIndex {
+		if len(indices) < 2 || len(indices) > 100 {
+			// Skip very common mini-hashes to avoid O(n²) blowup.
+			continue
+		}
+		for i := 0; i < len(indices); i++ {
+			for j := i + 1; j < len(indices); j++ {
+				a, b := indices[i], indices[j]
+				// Skip same-file overlapping blocks.
+				ba, bb := blocks[a], blocks[b]
+				if ba.key.fileIdx == bb.key.fileIdx {
+					dist := ba.key.pos - bb.key.pos
+					if dist < 0 {
+						dist = -dist
+					}
+					if dist < minTokens {
+						continue
+					}
+				}
+				p := pair{a, b}
+				if a > b {
+					p = pair{b, a}
+				}
+				if !seen[p] {
+					seen[p] = true
+					pairs = append(pairs, p)
+				}
+			}
+		}
+	}
+
+	// Evaluate Jaccard similarity for each candidate pair.
+	type fuzzyClone struct {
+		aIdx, bIdx int
+		similarity float64
+	}
+	var fuzzyMatches []fuzzyClone
+
+	for _, p := range pairs {
+		ba, bb := blocks[p.a], blocks[p.b]
+		sim := jaccardSimilarity(ba.miniSet, bb.miniSet)
+		if sim >= threshold && sim < 1.0 {
+			fuzzyMatches = append(fuzzyMatches, fuzzyClone{p.a, p.b, sim})
+		}
+	}
+
+	// Sort by similarity descending to prioritize best matches.
+	sort.Slice(fuzzyMatches, func(i, j int) bool {
+		return fuzzyMatches[i].similarity > fuzzyMatches[j].similarity
+	})
+
+	// Deduplicate: mark blocks as used so overlapping pairs don't create duplicates.
+	used := make(map[int]bool)
+	var clones []domain.Clone
+
+	for _, fm := range fuzzyMatches {
+		if used[fm.aIdx] || used[fm.bIdx] {
+			continue
+		}
+		used[fm.aIdx] = true
+		used[fm.bIdx] = true
+
+		ba, bb := blocks[fm.aIdx], blocks[fm.bIdx]
+
+		instances := []domain.CloneInstance{
+			buildSingleInstance(files, ba.key.fileIdx, ba.key.pos, minTokens),
+			buildSingleInstance(files, bb.key.fileIdx, bb.key.pos, minTokens),
+		}
+
+		lineCount := 0
+		if len(instances) > 0 {
+			lineCount = instances[0].EndLine - instances[0].StartLine + 1
+		}
+
+		// Build a combined hash for the pair.
+		h := fnv.New64a()
+		_, _ = fmt.Fprintf(h, "%d:%d:%d:%d", ba.key.fileIdx, ba.key.pos, bb.key.fileIdx, bb.key.pos)
+
+		clones = append(clones, domain.Clone{
+			Hash:       fmt.Sprintf("%016x", h.Sum64()),
+			Type:       domain.CloneType3,
+			Similarity: math.Round(fm.similarity*100) / 100, // round to 2 decimals
+			LineCount:  lineCount,
+			TokenCount: minTokens,
+			Instances:  instances,
+		})
+	}
+
+	return clones
+}
+
+// buildInstances creates CloneInstance structs with lazy-loaded preview lines.
+func buildInstances(files []TokenizedFile, starts []globalPos, totalTokens int) []domain.CloneInstance {
+	instances := make([]domain.CloneInstance, 0, len(starts))
+	for _, s := range starts {
+		instances = append(instances, buildSingleInstance(files, s.FileIdx, s.Pos, totalTokens))
+	}
+	return instances
+}
+
+// buildSingleInstance creates a single CloneInstance with lazy preview.
+func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) domain.CloneInstance {
+	toks := files[fileIdx].Tokens
+	startLine := toks[pos].Line
+	endIdx := pos + totalTokens - 1
+	if endIdx >= len(toks) {
+		endIdx = len(toks) - 1
+	}
+	endLine := toks[endIdx].Line
+	preview := loadPreviewLines(files[fileIdx].Path, startLine, endLine)
+
+	return domain.CloneInstance{
+		File:      files[fileIdx].Path,
+		StartLine: startLine,
+		EndLine:   endLine,
+		Lines:     preview,
+	}
+}
+
+// jaccardSimilarity computes |A ∩ B| / |A ∪ B| for two hash sets.
+func jaccardSimilarity(a, b map[uint64]bool) float64 {
+	if len(a) == 0 && len(b) == 0 {
+		return 0
+	}
+	intersection := 0
+	for h := range a {
+		if b[h] {
+			intersection++
+		}
+	}
+	union := len(a) + len(b) - intersection
+	if union == 0 {
+		return 0
+	}
+	return float64(intersection) / float64(union)
+}
+
 // classifyClone determines the clone type and similarity by comparing
 // the original token text across all instances.
 // If all tokens (including identifier names, literals) are identical → type-1 (similarity 1.0).
 // If structure matches but some identifiers/literals differ → type-2 (similarity 1.0).
-// Type-3 (future, #4) will introduce fractional similarity scores (0.5–<1.0).
 func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (string, float64) {
 	// Caller guarantees len(starts) >= 2.
 	ref := files[starts[0].FileIdx].Tokens[starts[0].Pos : starts[0].Pos+totalTokens]
@@ -261,6 +476,24 @@ func hashWindow(tokens []Token) uint64 {
 			_, _ = h.Write([]byte(t.Text))
 		}
 		_, _ = h.Write([]byte{0}) // separator
+	}
+	return h.Sum64()
+}
+
+// hashWindowFull hashes a token window using ALL token text (including OrigText).
+// Unlike hashWindow (used for type-1/2 detection), this preserves identifier and
+// literal differences so that near-miss blocks produce partial mini-window overlap.
+func hashWindowFull(tokens []Token) uint64 {
+	h := fnv.New64a()
+	for _, t := range tokens {
+		_, _ = h.Write([]byte{byte(t.Kind)})
+		if t.Text != "" {
+			_, _ = h.Write([]byte(t.Text))
+		}
+		if t.OrigText != "" {
+			_, _ = h.Write([]byte(t.OrigText))
+		}
+		_, _ = h.Write([]byte{0})
 	}
 	return h.Sum64()
 }

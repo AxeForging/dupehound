@@ -53,6 +53,12 @@ var exitZeroFlag = cli.BoolFlag{
 	Usage: "Always exit 0 even when clones are found (useful for reporting pipelines)",
 }
 
+var similarityFlag = cli.Float64Flag{
+	Name:  "similarity",
+	Value: 0.70,
+	Usage: "Minimum similarity for type-3 detection (0.50–1.00; 1.0 disables type-3)",
+}
+
 var configFlag = cli.StringFlag{
 	Name:  "config, c",
 	Value: "",

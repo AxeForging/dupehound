@@ -11,11 +11,12 @@ import (
 
 // ScanOptions configures a scan run.
 type ScanOptions struct {
-	Path      string
-	MinTokens int
-	MinLines  int // deprecated; if MinTokens == 0, converted to MinTokens = MinLines * 10
-	Exclude   []string
-	Language  string
+	Path          string
+	MinTokens     int
+	MinLines      int // deprecated; if MinTokens == 0, converted to MinTokens = MinLines * 10
+	Exclude       []string
+	Language      string
+	MinSimilarity float64 // minimum Jaccard similarity for type-3 detection (0.50–1.00)
 }
 
 // ScannerService performs code duplication detection.
@@ -77,7 +78,11 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		helpers.Log.Debug().Str("file", path).Int("tokens", len(tf.Tokens)).Msg("tokenized")
 	}
 
-	clones := Detect(tokenizedFiles, minTokens)
+	minSimilarity := opts.MinSimilarity
+	if minSimilarity <= 0 {
+		minSimilarity = 0.70
+	}
+	clones := Detect(tokenizedFiles, minTokens, minSimilarity)
 	duplicateLines := countDuplicateLines(clones)
 
 	return &domain.Report{
