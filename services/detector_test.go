@@ -1,12 +1,15 @@
 package services
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/AxeForging/dupehound/domain"
 )
 
 // makeFile is a helper that tokenizes a Go source string into a TokenizedFile.
+// Uses a synthetic path — preview lines won't load (use makeRealFile for that).
 func makeFile(path, src string) TokenizedFile {
 	return BuildTokenizedFile(path, src, goL())
 }
@@ -14,6 +17,16 @@ func makeFile(path, src string) TokenizedFile {
 // makeFileLang tokenizes with a specific language.
 func makeFileLang(path, src string, lang string) TokenizedFile {
 	return BuildTokenizedFile(path, src, LangForName(lang))
+}
+
+// makeRealFile writes src to a temp file and returns a TokenizedFile with a real path.
+func makeRealFile(t *testing.T, dir, name, src string) TokenizedFile {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return BuildTokenizedFile(p, src, goL())
 }
 
 // --- Type-1 clones (exact structural copy) ---
@@ -310,6 +323,7 @@ func helper() {
 // --- Preview lines are original source ---
 
 func TestDetect_PreviewLinesAreOriginalSource(t *testing.T) {
+	dir := t.TempDir()
 	src := `package main
 func helper() {
 	// this comment should appear in preview
@@ -317,8 +331,8 @@ func helper() {
 	return x
 }
 `
-	a := makeFile("a.go", src)
-	b := makeFile("b.go", src)
+	a := makeRealFile(t, dir, "a.go", src)
+	b := makeRealFile(t, dir, "b.go", src)
 	clones := Detect([]TokenizedFile{a, b}, 5)
 	if len(clones) == 0 {
 		t.Fatal("expected clones")
@@ -482,6 +496,129 @@ func process() {
 	for _, c := range clones {
 		if len(c.Instances) < 2 {
 			t.Errorf("clone has fewer than 2 instances: %+v", c)
+		}
+	}
+}
+
+// --- Clone type classification ---
+
+func TestDetect_Type1Clone_ClassifiedCorrectly(t *testing.T) {
+	// Truly identical code (same identifiers, same literals) → type-1, similarity 1.0.
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	files := []TokenizedFile{
+		makeFile("a.go", "package main\n\n"+block),
+		makeFile("b.go", "package main\n\n"+block),
+	}
+	clones := Detect(files, 10)
+	if len(clones) == 0 {
+		t.Fatal("expected at least one clone")
+	}
+	for _, c := range clones {
+		if c.Type != "type-1" {
+			t.Errorf("identical code should be type-1, got %q", c.Type)
+		}
+		if c.Similarity != 1.0 {
+			t.Errorf("type-1 similarity should be 1.0, got %f", c.Similarity)
+		}
+	}
+}
+
+func TestDetect_Type2Clone_ClassifiedCorrectly(t *testing.T) {
+	// Same structure, renamed variable → type-2, similarity 1.0.
+	a := makeFile("a.go", `package main
+func process() {
+	result := compute()
+	validate(result)
+	store(result)
+	notify(result)
+	return result
+}
+`)
+	b := makeFile("b.go", `package main
+func process() {
+	output := compute()
+	validate(output)
+	store(output)
+	notify(output)
+	return output
+}
+`)
+	clones := Detect([]TokenizedFile{a, b}, 10)
+	if len(clones) == 0 {
+		t.Fatal("expected type-2 clone")
+	}
+	for _, c := range clones {
+		if c.Type != "type-2" {
+			t.Errorf("renamed variable should be type-2, got %q", c.Type)
+		}
+		if c.Similarity != 1.0 {
+			t.Errorf("type-2 similarity should be 1.0, got %f", c.Similarity)
+		}
+	}
+}
+
+func TestDetect_Type2Clone_DifferentLiterals(t *testing.T) {
+	// Same structure, different numeric literals → type-2.
+	a := makeFile("a.go", `package main
+func config() {
+	timeout := 30
+	retries := 5
+	delay := 100
+	batch := 50
+	return timeout
+}
+`)
+	b := makeFile("b.go", `package main
+func config() {
+	timeout := 60
+	retries := 10
+	delay := 200
+	batch := 100
+	return timeout
+}
+`)
+	clones := Detect([]TokenizedFile{a, b}, 10)
+	if len(clones) == 0 {
+		t.Fatal("expected type-2 clone for different literals")
+	}
+	for _, c := range clones {
+		if c.Type != "type-2" {
+			t.Errorf("different literals should be type-2, got %q", c.Type)
+		}
+	}
+}
+
+func TestDetect_Type2Clone_SameFileInternalDuplicate(t *testing.T) {
+	// Same-file blocks with different function names → type-2 (func names differ).
+	body := "\tx := compute()\n\tvalidate(x)\n\tstore(x)\n\tnotify(x)\n\treturn x\n"
+	src := "package main\nfunc a() {\n" + body + "}\nfunc b() {\n" + body + "}\n"
+	files := []TokenizedFile{makeFile("a.go", src)}
+	clones := Detect(files, 10)
+	if len(clones) == 0 {
+		t.Fatal("expected clone")
+	}
+	for _, c := range clones {
+		if c.Type != "type-2" {
+			t.Errorf("same-file blocks with different func names should be type-2, got %q", c.Type)
+		}
+	}
+}
+
+func TestDetect_AllClonesHaveType(t *testing.T) {
+	// Every clone returned by Detect must have a non-empty Type.
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	files := []TokenizedFile{
+		makeFile("a.go", "package main\n\n"+block),
+		makeFile("b.go", "package main\n\n"+block),
+		makeFile("c.go", "package main\n\n"+block),
+	}
+	clones := Detect(files, 5)
+	for _, c := range clones {
+		if c.Type == "" {
+			t.Error("clone has empty Type")
+		}
+		if c.Similarity <= 0 {
+			t.Errorf("clone has non-positive Similarity: %f", c.Similarity)
 		}
 	}
 }

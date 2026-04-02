@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"hash/fnv"
+	"os"
 	"sort"
 	"strings"
 
@@ -10,18 +11,18 @@ import (
 )
 
 // TokenizedFile holds the lexed representation of one source file.
+// RawLines are not stored here to reduce memory; preview lines are
+// loaded lazily from disk only for files that end up in detected clones.
 type TokenizedFile struct {
-	Path     string
-	Tokens   []Token  // normalized token sequence (no newlines)
-	RawLines []string // original source split on "\n" for preview
+	Path   string
+	Tokens []Token // normalized token sequence (no newlines)
 }
 
 // BuildTokenizedFile tokenizes a source file and returns a TokenizedFile.
 func BuildTokenizedFile(path, content string, lang *domain.Language) TokenizedFile {
 	return TokenizedFile{
-		Path:     path,
-		Tokens:   TokenizeFile(content, lang),
-		RawLines: strings.Split(content, "\n"),
+		Path:   path,
+		Tokens: TokenizeFile(content, lang),
 	}
 }
 
@@ -41,11 +42,11 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
 	// posToHash[fi][i] = hash of files[fi].Tokens[i:i+minTokens]
-	// empty string means window is out of range.
-	posToHash := make([][]string, len(files))
+	// 0 means window is out of range (valid hashes are extremely unlikely to be 0).
+	posToHash := make([][]uint64, len(files))
 	for fi, tf := range files {
 		n := len(tf.Tokens)
-		hashes := make([]string, n)
+		hashes := make([]uint64, n)
 		for i := 0; i+minTokens <= n; i++ {
 			hashes[i] = hashWindow(tf.Tokens[i : i+minTokens])
 		}
@@ -53,10 +54,10 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 	}
 
 	// Step 2: build a global hash → positions index.
-	hashIndex := make(map[string][]globalPos)
+	hashIndex := make(map[uint64][]globalPos)
 	for fi, hashes := range posToHash {
 		for pi, h := range hashes {
-			if h == "" {
+			if h == 0 {
 				continue
 			}
 			hashIndex[h] = append(hashIndex[h], globalPos{fi, pi})
@@ -68,7 +69,7 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 	type candidate struct {
 		FileIdx int
 		Pos     int
-		Hash    string
+		Hash    uint64
 	}
 	var candidates []candidate
 	for h, positions := range hashIndex {
@@ -149,16 +150,16 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 		// A group can be extended by 1 if all members' next window share the same hash.
 		extLen := 0
 		for {
-			var nextHash string
+			var nextHash uint64
 			canExtend := true
 			for _, s := range starts {
 				nextPi := s.Pos + extLen + 1
-				if nextPi >= len(posToHash[s.FileIdx]) || posToHash[s.FileIdx][nextPi] == "" {
+				if nextPi >= len(posToHash[s.FileIdx]) || posToHash[s.FileIdx][nextPi] == 0 {
 					canExtend = false
 					break
 				}
 				nh := posToHash[s.FileIdx][nextPi]
-				if nextHash == "" {
+				if nextHash == 0 {
 					nextHash = nh
 				} else if nh != nextHash {
 					canExtend = false
@@ -181,7 +182,9 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 			}
 		}
 
-		// Build clone instances with original line ranges and preview lines.
+		// Build clone instances with original line ranges.
+		// Preview lines are loaded lazily from disk to avoid holding all
+		// source content in memory during detection.
 		instances := make([]domain.CloneInstance, 0, len(starts))
 		for _, s := range starts {
 			toks := files[s.FileIdx].Tokens
@@ -192,11 +195,7 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 			}
 			endLine := toks[endIdx].Line
 
-			rawLines := files[s.FileIdx].RawLines
-			preview := make([]string, 0, endLine-startLine+1)
-			for ln := startLine; ln <= endLine && ln-1 < len(rawLines); ln++ {
-				preview = append(preview, rawLines[ln-1])
-			}
+			preview := loadPreviewLines(files[s.FileIdx].Path, startLine, endLine)
 
 			instances = append(instances, domain.CloneInstance{
 				File:      files[s.FileIdx].Path,
@@ -211,8 +210,12 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 			lineCount = instances[0].EndLine - instances[0].StartLine + 1
 		}
 
+		cloneType, similarity := classifyClone(files, starts, totalTokens)
+
 		clones = append(clones, domain.Clone{
-			Hash:       cand.Hash,
+			Hash:       fmt.Sprintf("%016x", cand.Hash),
+			Type:       cloneType,
+			Similarity: similarity,
 			LineCount:  lineCount,
 			TokenCount: totalTokens,
 			Instances:  instances,
@@ -222,6 +225,27 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 	return clones
 }
 
+// classifyClone determines the clone type and similarity by comparing
+// the original token text across all instances.
+// If all tokens (including identifier names, literals) are identical → type-1 (similarity 1.0).
+// If structure matches but some identifiers/literals differ → type-2 (similarity 1.0).
+// Type-3 (future, #4) will introduce fractional similarity scores (0.5–<1.0).
+func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (string, float64) {
+	// Caller guarantees len(starts) >= 2.
+	ref := files[starts[0].FileIdx].Tokens[starts[0].Pos : starts[0].Pos+totalTokens]
+
+	for _, s := range starts[1:] {
+		other := files[s.FileIdx].Tokens[s.Pos : s.Pos+totalTokens]
+		for i := range ref {
+			if ref[i].OrigText != other[i].OrigText {
+				return domain.CloneType2, 1.0
+			}
+		}
+	}
+
+	return domain.CloneType1, 1.0
+}
+
 // hashWindow hashes a token window for structural clone detection.
 //
 // Hashing rules:
@@ -229,7 +253,7 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 //     This means all identifiers hash identically, enabling type-2 detection.
 //   - TokKeyword, TokOperator: Kind + Text are hashed, so `if` ≠ `for` and
 //     `+` ≠ `-`, preserving structural differences.
-func hashWindow(tokens []Token) string {
+func hashWindow(tokens []Token) uint64 {
 	h := fnv.New64a()
 	for _, t := range tokens {
 		_, _ = h.Write([]byte{byte(t.Kind)})
@@ -238,5 +262,20 @@ func hashWindow(tokens []Token) string {
 		}
 		_, _ = h.Write([]byte{0}) // separator
 	}
-	return fmt.Sprintf("%016x", h.Sum64())
+	return h.Sum64()
+}
+
+// loadPreviewLines reads the specified line range from a file on disk.
+// This avoids holding all source lines in memory during detection.
+func loadPreviewLines(path string, startLine, endLine int) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	rawLines := strings.Split(string(data), "\n")
+	preview := make([]string, 0, endLine-startLine+1)
+	for ln := startLine; ln <= endLine && ln-1 < len(rawLines); ln++ {
+		preview = append(preview, rawLines[ln-1])
+	}
+	return preview
 }
