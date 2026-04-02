@@ -47,3 +47,8 @@ var languageFlag = cli.StringFlag{
 	Value: "",
 	Usage: "Filter by language (e.g. go, python, javascript)",
 }
+
+var exitZeroFlag = cli.BoolFlag{
+	Name:  "exit-zero",
+	Usage: "Always exit 0 even when clones are found (useful for reporting pipelines)",
+}
