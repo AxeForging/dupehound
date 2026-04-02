@@ -247,11 +247,7 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	}
 
 	if len(sorted) > cloneLimit {
-		fmt.Fprintf(&b, "<details>\n<summary>%d more clones...</summary>\n\n", len(sorted)-cloneLimit)
-		for i := cloneLimit; i < len(sorted); i++ {
-			writeCloneMd(&b, i+1, sorted[i], opts)
-		}
-		fmt.Fprintf(&b, "</details>\n")
+		fmt.Fprintf(&b, "\n> %d more clones not shown. Run `dupehound scan --verbose` for full results.\n", len(sorted)-cloneLimit)
 	}
 
 	return b.String()

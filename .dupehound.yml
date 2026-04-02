@@ -1,0 +1,5 @@
+scan:
+  exclude:
+    - "*_test.go"
+    - "*.spec.ts"
+    - "*.cy.ts"
