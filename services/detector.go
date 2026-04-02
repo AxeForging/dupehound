@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
+	"github.com/AxeForging/dupehound/helpers"
 )
 
 // TokenizedFile holds the lexed representation of one source file.
@@ -304,14 +305,23 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 	seen := make(map[pair]bool)
 	var pairs []pair
 
+	const maxBucketSize = 500 // cap per mini-hash to bound O(n²) pair generation
+
 	for _, indices := range miniIndex {
-		if len(indices) < 2 || len(indices) > 100 {
-			// Skip very common mini-hashes to avoid O(n²) blowup.
+		if len(indices) < 2 {
 			continue
 		}
-		for i := 0; i < len(indices); i++ {
-			for j := i + 1; j < len(indices); j++ {
-				a, b := indices[i], indices[j]
+		bucket := indices
+		if len(bucket) > maxBucketSize {
+			helpers.Log.Debug().
+				Int("bucket_size", len(bucket)).
+				Int("cap", maxBucketSize).
+				Msg("large fuzzy bucket truncated — increase --min-tokens to reduce noise")
+			bucket = bucket[:maxBucketSize]
+		}
+		for i := 0; i < len(bucket); i++ {
+			for j := i + 1; j < len(bucket); j++ {
+				a, b := bucket[i], bucket[j]
 				// Skip same-file overlapping blocks.
 				ba, bb := blocks[a], blocks[b]
 				if ba.key.fileIdx == bb.key.fileIdx {
