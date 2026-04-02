@@ -65,6 +65,12 @@ var similarityFlag = cli.Float64Flag{
 	Usage: "Minimum similarity for type-3 detection (0.50–1.00; 1.0 disables type-3)",
 }
 
+var minDuplicationFlag = cli.Float64Flag{
+	Name:  "min-duplication",
+	Value: 0,
+	Usage: "Fail (exit 1) if global duplication percentage exceeds this value (0 = disabled)",
+}
+
 var configFlag = cli.StringFlag{
 	Name:  "config, c",
 	Value: "",

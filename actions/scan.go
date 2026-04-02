@@ -111,6 +111,8 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	helpers.Log.Info().
 		Int("clones", report.TotalClones).
 		Int("duplicate_lines", report.DuplicateLines).
+		Int("total_lines", report.TotalLines).
+		Float64("duplication_pct", report.DuplicationPct).
 		Msg("scan complete")
 
 	absPath, err := filepath.Abs(opts.Path)
@@ -132,6 +134,11 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 			return fmt.Errorf("write output file: %w", err)
 		}
 		helpers.Log.Info().Str("file", outFile).Msg("results written")
+	}
+
+	minDuplication := c.Float64("min-duplication")
+	if minDuplication > 0 && report.DuplicationPct > minDuplication {
+		return helpers.ErrThresholdExceeded
 	}
 
 	if report.TotalClones > 0 && !exitZero {

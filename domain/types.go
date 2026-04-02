@@ -25,13 +25,24 @@ type Clone struct {
 	Instances  []CloneInstance `json:"instances"`
 }
 
+// FileStats holds per-file duplication metrics.
+type FileStats struct {
+	File           string  `json:"file"`
+	TotalLines     int     `json:"total_lines"`
+	DuplicateLines int     `json:"duplicate_lines"`
+	DuplicationPct float64 `json:"duplication_pct"`
+}
+
 // Report is the full result of a dupehound scan.
 type Report struct {
-	TotalFiles     int     `json:"total_files"`
-	ScannedFiles   int     `json:"scanned_files"`
-	TotalClones    int     `json:"total_clones"`
-	DuplicateLines int     `json:"duplicate_lines"`
-	Clones         []Clone `json:"clones"`
+	TotalFiles     int         `json:"total_files"`
+	ScannedFiles   int         `json:"scanned_files"`
+	TotalClones    int         `json:"total_clones"`
+	TotalLines     int         `json:"total_lines"`
+	DuplicateLines int         `json:"duplicate_lines"`
+	DuplicationPct float64     `json:"duplication_pct"`
+	FileStats      []FileStats `json:"file_stats,omitempty"`
+	Clones         []Clone     `json:"clones"`
 }
 
 // Config is the structure of a .dupehound.yml config file.
