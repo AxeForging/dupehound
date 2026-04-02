@@ -25,29 +25,64 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		helpers.SetupLogger("debug")
 	}
 
-	minTokens := c.Int("min-tokens")
-	minLines := c.Int("min-lines")
-
-	// Resolve: min-tokens takes precedence; min-lines is the legacy fallback.
-	if minTokens <= 0 && minLines > 0 {
-		minTokens = minLines * 10
+	// Load config file: explicit --config flag, then auto-discover from cwd.
+	configPath := c.String("config")
+	if configPath == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
+		configPath = services.FindConfig(wd)
 	}
-	if minTokens <= 0 {
+	cfg, err := services.LoadConfig(configPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	// Build opts only from flags that were explicitly set by the caller;
+	// leave others at zero so ApplyConfigDefaults can fill them from the file.
+	var opts services.ScanOptions
+	if c.IsSet("path") {
+		opts.Path = c.String("path")
+	}
+	if c.IsSet("min-tokens") {
+		opts.MinTokens = c.Int("min-tokens")
+	} else if c.IsSet("min-lines") {
+		opts.MinTokens = c.Int("min-lines") * 10
+	}
+	if c.IsSet("exclude") {
+		opts.Exclude = c.StringSlice("exclude")
+	}
+	if c.IsSet("language") {
+		opts.Language = c.String("language")
+	}
+
+	services.ApplyConfigDefaults(&opts, cfg)
+
+	// Final fallback: nothing set in CLI or config → use built-in defaults.
+	if opts.Path == "" {
+		opts.Path = "."
+	}
+	if opts.MinTokens <= 0 {
 		return helpers.ErrInvalidMinTokens
 	}
 
+	// Format and output: CLI wins, then config, then built-in default ("text").
 	format := c.String("format")
+	if !c.IsSet("format") && cfg.Scan.Format != "" {
+		format = cfg.Scan.Format
+	}
 	validFormats := map[string]bool{"text": true, "json": true, "sarif": true}
 	if !validFormats[format] {
 		return helpers.ErrInvalidFormat
 	}
 
-	opts := services.ScanOptions{
-		Path:      c.String("path"),
-		MinTokens: minTokens,
-		Exclude:   c.StringSlice("exclude"),
-		Language:  c.String("language"),
+	outFile := c.String("output")
+	if !c.IsSet("output") && cfg.Scan.Output != "" {
+		outFile = cfg.Scan.Output
 	}
+
+	exitZero := c.Bool("exit-zero") || cfg.Scan.ExitZero
 
 	helpers.Log.Info().
 		Str("path", opts.Path).
@@ -70,7 +105,6 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		return fmt.Errorf("format report: %w", err)
 	}
 
-	outFile := c.String("output")
 	if outFile == "" {
 		fmt.Print(output)
 	} else {
@@ -80,7 +114,7 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		helpers.Log.Info().Str("file", outFile).Msg("results written")
 	}
 
-	if report.TotalClones > 0 && !c.Bool("exit-zero") {
+	if report.TotalClones > 0 && !exitZero {
 		return helpers.ErrClonesFound
 	}
 	return nil

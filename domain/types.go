@@ -25,6 +25,23 @@ type Report struct {
 	Clones         []Clone `json:"clones"`
 }
 
+// Config is the structure of a .dupehound.yml config file.
+type Config struct {
+	Scan ScanConfig `yaml:"scan"`
+}
+
+// ScanConfig holds all scan-related settings from the config file.
+// Fields map 1:1 to CLI flags; zero values mean "not set" (CLI flag wins).
+type ScanConfig struct {
+	Path      string   `yaml:"path"`
+	MinTokens int      `yaml:"min-tokens"`
+	Exclude   []string `yaml:"exclude"`
+	Language  string   `yaml:"language"`
+	Format    string   `yaml:"format"`
+	Output    string   `yaml:"output"`
+	ExitZero  bool     `yaml:"exit-zero"`
+}
+
 // Language defines a programming language and how to strip its comments.
 type Language struct {
 	Name        string

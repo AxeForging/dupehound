@@ -52,3 +52,9 @@ var exitZeroFlag = cli.BoolFlag{
 	Name:  "exit-zero",
 	Usage: "Always exit 0 even when clones are found (useful for reporting pipelines)",
 }
+
+var configFlag = cli.StringFlag{
+	Name:  "config, c",
+	Value: "",
+	Usage: "Path to config file (default: auto-discover .dupehound.yml walking up from cwd)",
+}
