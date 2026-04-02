@@ -7,6 +7,8 @@ on:
 jobs:
   validate-title:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - name: Validate PR title
         uses: amannn/action-semantic-pull-request@v5
@@ -29,7 +31,8 @@ jobs:
       - name: AI code review
         uses: AxeForging/reviewforge@main
         with:
-          model: gemini-2.5-flash
+          AI_PROVIDER: gemini
+          AI_MODEL: gemini-2.5-flash
+          AI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
