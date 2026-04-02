@@ -3,6 +3,7 @@ package services
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
@@ -17,6 +18,7 @@ type ScanOptions struct {
 	Exclude       []string
 	Language      string
 	MinSimilarity float64 // minimum Jaccard similarity for type-3 detection (0.50–1.00)
+	MaxBucket     int     // max blocks per fuzzy bucket (0 = default 500)
 }
 
 // ScannerService performs code duplication detection.
@@ -82,7 +84,12 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	if minSimilarity <= 0 {
 		minSimilarity = 0.70
 	}
-	clones := Detect(tokenizedFiles, minTokens, minSimilarity)
+	clones := DetectWithOptions(tokenizedFiles, DetectOptions{
+		MinTokens:     minTokens,
+		MinSimilarity: minSimilarity,
+		MaxBucket:     opts.MaxBucket,
+	})
+	clones = deduplicateOverlapping(clones)
 	duplicateLines := countDuplicateLines(clones)
 
 	return &domain.Report{
@@ -181,6 +188,51 @@ func DetectLanguage(path string) *domain.Language {
 		}
 	}
 	return nil
+}
+
+// deduplicateOverlapping removes clones whose instances are fully contained
+// within a larger clone's instances in the same files. This prevents the top
+// clones list from showing the same region multiple times at different sizes.
+func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
+	// Build a set of all instance ranges per clone, sorted largest first.
+	sort.Slice(clones, func(i, j int) bool {
+		return clones[i].LineCount > clones[j].LineCount
+	})
+
+	// For each kept clone, record its covered ranges.
+	type rangeKey struct {
+		file  string
+		start int
+		end   int
+	}
+	kept := make([]domain.Clone, 0, len(clones))
+	coveredRanges := make([]rangeKey, 0, len(clones)*2)
+
+	for _, c := range clones {
+		allSubsumed := len(c.Instances) > 0
+		for _, inst := range c.Instances {
+			subsumed := false
+			for _, r := range coveredRanges {
+				if inst.File == r.file && inst.StartLine >= r.start && inst.EndLine <= r.end {
+					subsumed = true
+					break
+				}
+			}
+			if !subsumed {
+				allSubsumed = false
+				break
+			}
+		}
+		if allSubsumed {
+			continue
+		}
+		kept = append(kept, c)
+		for _, inst := range c.Instances {
+			coveredRanges = append(coveredRanges, rangeKey{inst.File, inst.StartLine, inst.EndLine})
+		}
+	}
+
+	return kept
 }
 
 // countDuplicateLines counts distinct (file, line) pairs across all clones.

@@ -73,3 +73,33 @@ jobs:
           config: .structlint.yaml
           comment-on-pr: "true"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dupehound:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: Build dupehound
+        run: make build-local
+      - name: Run dupehound scan
+        run: |
+          ./dupehound scan --exit-zero --verbose
+          ./dupehound scan --exit-zero --format md > /tmp/dupehound-report.md
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "" >> /tmp/dupehound-report.md
+          echo "---" >> /tmp/dupehound-report.md
+          echo "<sub><a href=\"${RUN_URL}\">View full run</a> · Scanned by <a href=\"https://github.com/AxeForging/dupehound\">dupehound</a></sub>" >> /tmp/dupehound-report.md
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY=$(cat /tmp/dupehound-report.md)
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '.[] | select(.body | startswith("## dupehound scan results")) | .id' | head -1)
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -X DELETE
+          fi
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"

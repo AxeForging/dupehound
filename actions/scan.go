@@ -3,6 +3,7 @@ package actions
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/AxeForging/dupehound/helpers"
 	"github.com/AxeForging/dupehound/services"
@@ -59,6 +60,9 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if c.IsSet("similarity") {
 		opts.MinSimilarity = c.Float64("similarity")
 	}
+	if c.IsSet("max-bucket") {
+		opts.MaxBucket = c.Int("max-bucket")
+	}
 
 	services.ApplyConfigDefaults(&opts, cfg)
 
@@ -67,7 +71,13 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		opts.Path = "."
 	}
 	if opts.MinTokens <= 0 {
-		return helpers.ErrInvalidMinTokens
+		opts.MinTokens = 50
+	}
+	if opts.MinSimilarity == 0 {
+		opts.MinSimilarity = 0.70
+	}
+	if opts.MaxBucket == 0 {
+		opts.MaxBucket = 5000
 	}
 
 	// Format and output: CLI wins, then config, then built-in default ("text").
@@ -75,7 +85,7 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if !c.IsSet("format") && cfg.Scan.Format != "" {
 		format = cfg.Scan.Format
 	}
-	validFormats := map[string]bool{"text": true, "json": true, "sarif": true}
+	validFormats := map[string]bool{"text": true, "json": true, "sarif": true, "md": true}
 	if !validFormats[format] {
 		return helpers.ErrInvalidFormat
 	}
@@ -103,7 +113,14 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		Int("duplicate_lines", report.DuplicateLines).
 		Msg("scan complete")
 
-	output, err := services.FormatReport(report, format)
+	absPath, err := filepath.Abs(opts.Path)
+	if err != nil {
+		absPath = opts.Path
+	}
+	output, err := services.FormatReport(report, format, services.FormatOptions{
+		ScanPath: absPath,
+		Verbose:  c.Bool("verbose"),
+	})
 	if err != nil {
 		return fmt.Errorf("format report: %w", err)
 	}

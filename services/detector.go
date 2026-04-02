@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
+	"github.com/AxeForging/dupehound/helpers"
 )
 
 // TokenizedFile holds the lexed representation of one source file.
@@ -17,13 +18,16 @@ import (
 type TokenizedFile struct {
 	Path   string
 	Tokens []Token // normalized token sequence (no newlines)
+	InFunc []bool  // per-token: true if inside a function/method body
 }
 
 // BuildTokenizedFile tokenizes a source file and returns a TokenizedFile.
 func BuildTokenizedFile(path, content string, lang *domain.Language) TokenizedFile {
+	tokens := TokenizeFile(content, lang)
 	return TokenizedFile{
 		Path:   path,
-		Tokens: TokenizeFile(content, lang),
+		Tokens: tokens,
+		InFunc: markFunctionBodies(tokens, lang),
 	}
 }
 
@@ -36,29 +40,53 @@ type globalPos struct {
 // Detect finds all clone groups (type-1, type-2, and type-3) in the given token sequences.
 // minTokens is the minimum window size. minSimilarity is the Jaccard threshold for type-3
 // detection (set to 1.0 to disable type-3).
+// DetectOptions holds parameters for clone detection.
+type DetectOptions struct {
+	MinTokens     int
+	MinSimilarity float64
+	MaxBucket     int // max blocks per fuzzy mini-hash bucket (0 = default 500)
+}
+
 func Detect(files []TokenizedFile, minTokens int, minSimilarity float64) []domain.Clone {
-	if len(files) == 0 || minTokens <= 0 {
+	return DetectWithOptions(files, DetectOptions{
+		MinTokens:     minTokens,
+		MinSimilarity: minSimilarity,
+	})
+}
+
+// DetectWithOptions finds all clone groups with full control over detection parameters.
+func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone {
+	if len(files) == 0 || opts.MinTokens <= 0 {
 		return nil
 	}
 
-	exact := detectExact(files, minTokens)
+	exact := detectExact(files, opts.MinTokens)
 
-	if minSimilarity >= 1.0 {
+	if opts.MinSimilarity >= 1.0 {
 		return exact
 	}
 
-	fuzzy := detectFuzzy(files, minTokens, minSimilarity, exact)
+	maxBucket := opts.MaxBucket
+	if maxBucket <= 0 {
+		maxBucket = 5000
+	}
+
+	fuzzy := detectFuzzy(files, opts.MinTokens, opts.MinSimilarity, maxBucket, exact)
 	return append(exact, fuzzy...)
 }
 
 // detectExact finds type-1 and type-2 clones using hash-based sliding windows.
 func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
+	// Skip windows that are not fully inside a function body.
 	posToHash := make([][]uint64, len(files))
 	for fi, tf := range files {
 		n := len(tf.Tokens)
 		hashes := make([]uint64, n)
 		for i := 0; i+minTokens <= n; i++ {
+			if !windowInFunc(tf.InFunc, i, minTokens) {
+				continue
+			}
 			hashes[i] = hashWindow(tf.Tokens[i : i+minTokens])
 		}
 		posToHash[fi] = hashes
@@ -208,7 +236,7 @@ func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 // detectFuzzy finds type-3 near-miss clones using mini-window Jaccard similarity.
 // It skips blocks already covered by exact clones.
 // Requires minTokens >= 10 to produce meaningful mini-windows; returns nil otherwise.
-func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactClones []domain.Clone) []domain.Clone {
+func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone) []domain.Clone {
 	if minTokens < 10 {
 		return nil
 	}
@@ -259,6 +287,11 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 	for fi, tf := range files {
 		n := len(tf.Tokens)
 		for pos := 0; pos+minTokens <= n; pos++ {
+			// Skip blocks not fully inside a function body.
+			if !windowInFunc(tf.InFunc, pos, minTokens) {
+				continue
+			}
+
 			startLine := tf.Tokens[pos].Line
 			endIdx := pos + minTokens - 1
 			if endIdx >= n {
@@ -305,13 +338,21 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 	var pairs []pair
 
 	for _, indices := range miniIndex {
-		if len(indices) < 2 || len(indices) > 100 {
-			// Skip very common mini-hashes to avoid O(n²) blowup.
+		if len(indices) < 2 {
 			continue
 		}
-		for i := 0; i < len(indices); i++ {
-			for j := i + 1; j < len(indices); j++ {
-				a, b := indices[i], indices[j]
+		bucket := indices
+		if len(bucket) > maxBucket {
+			helpers.Log.Warn().
+				Int("total_blocks", len(bucket)).
+				Int("evaluated", maxBucket).
+				Int("skipped", len(bucket)-maxBucket).
+				Msg("fuzzy bucket truncated: common mini-window pattern has too many candidates, some near-miss clones may not be reported")
+			bucket = bucket[:maxBucket]
+		}
+		for i := 0; i < len(bucket); i++ {
+			for j := i + 1; j < len(bucket); j++ {
+				a, b := bucket[i], bucket[j]
 				// Skip same-file overlapping blocks.
 				ba, bb := blocks[a], blocks[b]
 				if ba.key.fileIdx == bb.key.fileIdx {
@@ -342,7 +383,20 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 	}
 	var fuzzyMatches []fuzzyClone
 
-	for _, p := range pairs {
+	if len(pairs) > 1000 {
+		helpers.Log.Info().
+			Int("pairs", len(pairs)).
+			Msg("evaluating fuzzy candidate pairs — this may take a moment on large codebases")
+	}
+
+	for i, p := range pairs {
+		if len(pairs) > 10000 && i > 0 && i%10000 == 0 {
+			helpers.Log.Info().
+				Int("evaluated", i).
+				Int("total", len(pairs)).
+				Int("matches_so_far", len(fuzzyMatches)).
+				Msg("fuzzy detection progress")
+		}
 		ba, bb := blocks[p.a], blocks[p.b]
 		sim := jaccardSimilarity(ba.miniSet, bb.miniSet)
 		if sim >= threshold && sim < 1.0 {
@@ -439,6 +493,24 @@ func jaccardSimilarity(a, b map[uint64]bool) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// windowInFunc returns true if all tokens in the window [pos, pos+size) are
+// inside a function body. Returns true if InFunc is nil (no filtering).
+func windowInFunc(inFunc []bool, pos, size int) bool {
+	if len(inFunc) == 0 {
+		return true
+	}
+	end := pos + size
+	if end > len(inFunc) {
+		end = len(inFunc)
+	}
+	for i := pos; i < end; i++ {
+		if !inFunc[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // classifyClone determines the clone type and similarity by comparing

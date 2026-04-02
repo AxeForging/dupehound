@@ -23,7 +23,7 @@ var minLinesFlag = cli.IntFlag{
 var formatFlag = cli.StringFlag{
 	Name:  "format, f",
 	Value: "text",
-	Usage: "Output format: text, json, sarif",
+	Usage: "Output format: text, json, sarif, md",
 }
 
 var outputFlag = cli.StringFlag{
@@ -51,6 +51,12 @@ var languageFlag = cli.StringFlag{
 var exitZeroFlag = cli.BoolFlag{
 	Name:  "exit-zero",
 	Usage: "Always exit 0 even when clones are found (useful for reporting pipelines)",
+}
+
+var maxBucketFlag = cli.IntFlag{
+	Name:  "max-bucket",
+	Value: 5000,
+	Usage: "Max candidates per fuzzy hash bucket (higher = slower but more thorough type-3 detection, 0 = unlimited)",
 }
 
 var similarityFlag = cli.Float64Flag{
