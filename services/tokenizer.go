@@ -492,7 +492,11 @@ func markFunctionBodies(tokens []Token, lang *domain.Language) []bool {
 	case "ruby":
 		markDefEndFunctions(tokens, inFunc, "def", "end")
 	case "elixir":
-		markDefEndFunctions(tokens, inFunc, "", "end") // uses funcKeywords set
+		markDefEndFunctions(tokens, inFunc, "", "end")
+	case "lua":
+		markDefEndFunctions(tokens, inFunc, "function", "end")
+	case "sql":
+		markSQLFunctions(tokens, inFunc)
 	default:
 		markBraceFunctions(tokens, inFunc, lang)
 	}
@@ -630,6 +634,46 @@ func markPythonFunctions(tokens []Token, inFunc []bool) {
 	}
 }
 
+// markSQLFunctions marks tokens inside SQL FUNCTION/PROCEDURE bodies (BEGIN...END).
+func markSQLFunctions(tokens []Token, inFunc []bool) {
+	n := len(tokens)
+	fkws := map[string]bool{
+		"FUNCTION": true, "PROCEDURE": true,
+		"function": true, "procedure": true,
+	}
+	for i := 0; i < n; i++ {
+		if tokens[i].Kind != TokKeyword || !fkws[tokens[i].Text] {
+			continue
+		}
+		// Find the BEGIN after the function keyword.
+		beginIdx := -1
+		for j := i + 1; j < n; j++ {
+			if tokens[j].Kind == TokKeyword && (tokens[j].Text == "BEGIN" || tokens[j].Text == "begin") {
+				beginIdx = j
+				break
+			}
+		}
+		if beginIdx < 0 {
+			continue
+		}
+		// Track BEGIN/END depth.
+		depth := 1
+		for j := beginIdx + 1; j < n && depth > 0; j++ {
+			if tokens[j].Kind == TokKeyword {
+				switch tokens[j].Text {
+				case "BEGIN", "begin":
+					depth++
+				case "END", "end":
+					depth--
+				}
+			}
+			if depth > 0 {
+				inFunc[j] = true
+			}
+		}
+	}
+}
+
 // markDefEndFunctions marks tokens between def and end keywords (Ruby, Elixir).
 func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) {
 	defKeywords := map[string]bool{"def": true}
@@ -645,6 +689,7 @@ func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) {
 	nestKeywords := map[string]bool{
 		"do": true, "class": true, "module": true,
 		"if": true, "case": true, "cond": true,
+		"for": true, "while": true, "repeat": true,
 	}
 	n := len(tokens)
 	for i := 0; i < n; i++ {
