@@ -73,3 +73,32 @@ jobs:
           config: .structlint.yaml
           comment-on-pr: "true"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  dupehound:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - name: Build dupehound
+        run: make build-local
+      - name: Run dupehound scan
+        id: scan
+        run: |
+          REPORT=$(./dupehound scan --exit-zero --format md 2>/dev/null)
+          # Write to file to preserve markdown formatting
+          echo "$REPORT" > /tmp/dupehound-report.md
+      - name: Comment on PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BODY=$(cat /tmp/dupehound-report.md)
+          # Delete previous dupehound comment if exists
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
+            --jq '.[] | select(.body | startswith("## dupehound scan results")) | .id' | head -1)
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -X DELETE
+          fi
+          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"

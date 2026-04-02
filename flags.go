@@ -23,7 +23,7 @@ var minLinesFlag = cli.IntFlag{
 var formatFlag = cli.StringFlag{
 	Name:  "format, f",
 	Value: "text",
-	Usage: "Output format: text, json, sarif",
+	Usage: "Output format: text, json, sarif, md",
 }
 
 var outputFlag = cli.StringFlag{
