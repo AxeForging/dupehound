@@ -68,6 +68,13 @@ func typeBreakdown(clones []domain.Clone) string {
 	return strings.Join(parts, ", ")
 }
 
+func topN(total int, defaultN int, verbose bool) int {
+	if verbose || total <= defaultN {
+		return total
+	}
+	return defaultN
+}
+
 func relPath(absPath, basePath string) string {
 	if basePath == "" {
 		return absPath
@@ -98,12 +105,8 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 
 	fmt.Fprintf(&b, "Breakdown     : %s\n", typeBreakdown(report.Clones))
 
-	// Use FileStats (sorted by duplication_pct) if available, otherwise fall back.
-	limit := defaultTopHotspots
 	if len(report.FileStats) > 0 {
-		if opts.Verbose || len(report.FileStats) <= limit {
-			limit = len(report.FileStats)
-		}
+		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
 		fmt.Fprintf(&b, "\nHotspots (files by duplication %%):\n")
 		for i := 0; i < limit; i++ {
 			fs := report.FileStats[i]
@@ -116,11 +119,7 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 	}
 
 	sorted := sortClonesByImpact(report.Clones)
-
-	cloneLimit := defaultTopClones
-	if opts.Verbose || len(sorted) <= cloneLimit {
-		cloneLimit = len(sorted)
-	}
+	cloneLimit := topN(len(sorted), defaultTopClones, opts.Verbose)
 
 	fmt.Fprintf(&b, "\nTop clones (by impact):\n")
 	for i := 0; i < cloneLimit; i++ {
@@ -184,10 +183,7 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 
 	// --- Hotspots ---
 	if len(report.FileStats) > 0 {
-		limit := defaultTopHotspots
-		if opts.Verbose || len(report.FileStats) <= limit {
-			limit = len(report.FileStats)
-		}
+		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
 
 		fmt.Fprintf(&b, "\n### Hotspots\n\n")
 		fmt.Fprintf(&b, "| Dup %% | Dup Lines | Total Lines | File |\n")
@@ -213,11 +209,7 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 
 	// --- Top clones ---
 	sorted := sortClonesByImpact(report.Clones)
-
-	cloneLimit := defaultTopClones
-	if opts.Verbose || len(sorted) <= cloneLimit {
-		cloneLimit = len(sorted)
-	}
+	cloneLimit := topN(len(sorted), defaultTopClones, opts.Verbose)
 
 	fmt.Fprintf(&b, "\n### Top clones (by impact)\n\n")
 	for i := 0; i < cloneLimit; i++ {
