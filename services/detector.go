@@ -313,10 +313,11 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, exactC
 		}
 		bucket := indices
 		if len(bucket) > maxBucketSize {
-			helpers.Log.Debug().
-				Int("bucket_size", len(bucket)).
-				Int("cap", maxBucketSize).
-				Msg("large fuzzy bucket truncated — increase --min-tokens to reduce noise")
+			helpers.Log.Warn().
+				Int("total_blocks", len(bucket)).
+				Int("evaluated", maxBucketSize).
+				Int("skipped", len(bucket)-maxBucketSize).
+				Msg("fuzzy bucket truncated: common mini-window pattern has too many candidates, some near-miss clones may not be reported")
 			bucket = bucket[:maxBucketSize]
 		}
 		for i := 0; i < len(bucket); i++ {
