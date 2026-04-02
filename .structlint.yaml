@@ -47,6 +47,7 @@ file_naming_pattern:
 
 ignore:
   - ".git"
+  - ".claude"
   - "vendor"
   - "node_modules"
   - "dist"

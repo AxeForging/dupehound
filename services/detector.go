@@ -211,8 +211,12 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 			lineCount = instances[0].EndLine - instances[0].StartLine + 1
 		}
 
+		cloneType, similarity := classifyClone(files, starts, totalTokens)
+
 		clones = append(clones, domain.Clone{
 			Hash:       cand.Hash,
+			Type:       cloneType,
+			Similarity: similarity,
 			LineCount:  lineCount,
 			TokenCount: totalTokens,
 			Instances:  instances,
@@ -220,6 +224,31 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 	}
 
 	return clones
+}
+
+// classifyClone determines the clone type and similarity by comparing
+// the original token text across all instances.
+// If all tokens (including identifier names, literals) are identical → type-1 (similarity 1.0).
+// If structure matches but some identifiers/literals differ → type-2 (similarity 1.0).
+// Type-3 will be set by the fuzzy detector (future).
+func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (string, float64) {
+	if len(starts) < 2 {
+		return domain.CloneType1, 1.0
+	}
+
+	// Get the token slice for the first instance as the reference.
+	ref := files[starts[0].FileIdx].Tokens[starts[0].Pos : starts[0].Pos+totalTokens]
+
+	for _, s := range starts[1:] {
+		other := files[s.FileIdx].Tokens[s.Pos : s.Pos+totalTokens]
+		for i := range ref {
+			if ref[i].OrigText != other[i].OrigText {
+				return domain.CloneType2, 1.0
+			}
+		}
+	}
+
+	return domain.CloneType1, 1.0
 }
 
 // hashWindow hashes a token window for structural clone detection.

@@ -37,8 +37,8 @@ func formatText(report *domain.Report) string {
 	}
 
 	for i, clone := range report.Clones {
-		fmt.Fprintf(&b, "Clone #%d  %d lines · %d tokens · %d instances\n",
-			i+1, clone.LineCount, clone.TokenCount, len(clone.Instances))
+		fmt.Fprintf(&b, "Clone #%d  %s  similarity: %.2f  %d lines · %d tokens · %d instances\n",
+			i+1, clone.Type, clone.Similarity, clone.LineCount, clone.TokenCount, len(clone.Instances))
 		for _, inst := range clone.Instances {
 			fmt.Fprintf(&b, "  %s:%d-%d\n", inst.File, inst.StartLine, inst.EndLine)
 		}
@@ -90,9 +90,15 @@ type sarifRule struct {
 }
 
 type sarifResult struct {
-	RuleID    string          `json:"ruleId"`
-	Message   sarifMessage    `json:"message"`
-	Locations []sarifLocation `json:"locations"`
+	RuleID     string                `json:"ruleId"`
+	Message    sarifMessage          `json:"message"`
+	Locations  []sarifLocation       `json:"locations"`
+	Properties sarifResultProperties `json:"properties"`
+}
+
+type sarifResultProperties struct {
+	CloneType  string  `json:"cloneType"`
+	Similarity float64 `json:"similarity"`
 }
 
 type sarifMessage struct {
@@ -132,8 +138,12 @@ func formatSARIF(report *domain.Report) (string, error) {
 		}
 		results = append(results, sarifResult{
 			RuleID:    "DUPE001",
-			Message:   sarifMessage{Text: fmt.Sprintf("Clone #%d: %d duplicate lines across %d locations", i+1, clone.LineCount, len(clone.Instances))},
+			Message:   sarifMessage{Text: fmt.Sprintf("Clone #%d (%s): %d duplicate lines across %d locations", i+1, clone.Type, clone.LineCount, len(clone.Instances))},
 			Locations: locs,
+			Properties: sarifResultProperties{
+				CloneType:  clone.Type,
+				Similarity: clone.Similarity,
+			},
 		})
 	}
 

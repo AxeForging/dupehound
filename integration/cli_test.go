@@ -645,3 +645,126 @@ func TestConfigFile_LanguageFromConfig(t *testing.T) {
 		t.Errorf("expected Go clones found with language=go config, got: %s", string(out))
 	}
 }
+
+// --- Clone type labels and similarity ---
+
+func TestCloneType_TextOutput_ContainsTypeLabel(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero").CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	output := string(out)
+	if !strings.Contains(output, "type-1") && !strings.Contains(output, "type-2") {
+		t.Errorf("text output should contain clone type label, got: %s", output)
+	}
+	if !strings.Contains(output, "similarity:") {
+		t.Errorf("text output should contain similarity score, got: %s", output)
+	}
+}
+
+func TestCloneType_TextOutput_Type1ForIdenticalCode(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	// Identical code → type-1
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero").CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "type-1") {
+		t.Errorf("identical code should be type-1, got: %s", string(out))
+	}
+}
+
+func TestCloneType_TextOutput_Type2ForRenamedVariable(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	// Same structure, renamed variable → type-2
+	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tresult := compute()\n\tvalidate(result)\n\tstore(result)\n\tnotify(result)\n\treturn result\n}\n")
+	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\toutput := compute()\n\tvalidate(output)\n\tstore(output)\n\tnotify(output)\n\treturn output\n}\n")
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero").CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "type-2") {
+		t.Errorf("renamed variable should produce type-2, got: %s", string(out))
+	}
+}
+
+func TestCloneType_JSONOutput_HasTypeAndSimilarity(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, string(out))
+	}
+	if len(report.Clones) == 0 {
+		t.Fatal("expected clones in JSON output")
+	}
+	for _, c := range report.Clones {
+		if c.Type == "" {
+			t.Error("JSON clone missing type field")
+		}
+		if c.Similarity <= 0 {
+			t.Errorf("JSON clone has non-positive similarity: %f", c.Similarity)
+		}
+	}
+}
+
+func TestCloneType_SARIFOutput_HasProperties(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "sarif")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	// Parse the SARIF output and check properties.
+	var sarif struct {
+		Runs []struct {
+			Results []struct {
+				Properties struct {
+					CloneType  string  `json:"cloneType"`
+					Similarity float64 `json:"similarity"`
+				} `json:"properties"`
+			} `json:"results"`
+		} `json:"runs"`
+	}
+	if err := json.Unmarshal(out, &sarif); err != nil {
+		t.Fatalf("invalid SARIF JSON: %v\n%s", err, string(out))
+	}
+	if len(sarif.Runs) == 0 || len(sarif.Runs[0].Results) == 0 {
+		t.Fatal("expected SARIF results")
+	}
+	result := sarif.Runs[0].Results[0]
+	if result.Properties.CloneType == "" {
+		t.Error("SARIF result missing cloneType property")
+	}
+	if result.Properties.Similarity <= 0 {
+		t.Errorf("SARIF result has non-positive similarity: %f", result.Properties.Similarity)
+	}
+}

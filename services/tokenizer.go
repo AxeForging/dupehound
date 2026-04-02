@@ -24,10 +24,13 @@ const (
 // enabling type-2 clone detection (renamed variables, different literals).
 // For TokKeyword and TokOperator, Text carries the verbatim value so that
 // `if` ≠ `for` and `+` ≠ `-` in clone comparisons.
+// OrigText preserves the original source text for Ident/Number/String tokens,
+// used after detection to classify clones as type-1 vs type-2.
 type Token struct {
-	Kind TokenKind
-	Text string // empty for Ident/Number/String; verbatim for Keyword/Operator
-	Line int    // 1-indexed original source line
+	Kind     TokenKind
+	Text     string // empty for Ident/Number/String; verbatim for Keyword/Operator
+	OrigText string // original text for Ident/Number/String; empty for Keyword/Operator
+	Line     int    // 1-indexed original source line
 }
 
 // TokenizeFile lexes content into a normalized token sequence for the given language.
@@ -99,6 +102,7 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 		// Python / Ruby triple-quoted strings (must precede single-quote handling).
 		if lang.Name == "python" || lang.Name == "ruby" {
 			if hasPrefix(src, pos, `"""`) || hasPrefix(src, pos, `'''`) {
+				start := pos
 				delim := src[pos : pos+3]
 				pos += 3
 				for pos < n {
@@ -111,13 +115,14 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 					}
 					pos++
 				}
-				tokens = append(tokens, Token{Kind: TokString, Line: line})
+				tokens = append(tokens, Token{Kind: TokString, OrigText: src[start:pos], Line: line})
 				continue
 			}
 		}
 
 		// String and character literals.
 		if ch == '"' || ch == '\'' || ch == '`' {
+			start := pos
 			startLine := line
 			delim := ch
 			pos++
@@ -140,16 +145,17 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 				}
 				pos++
 			}
-			tokens = append(tokens, Token{Kind: TokString, Line: startLine})
+			tokens = append(tokens, Token{Kind: TokString, OrigText: src[start:pos], Line: startLine})
 			continue
 		}
 
 		// Numeric literals (including 0x hex, 0b binary, floats, underscored).
 		if ch >= '0' && ch <= '9' {
+			start := pos
 			for pos < n && isNumChar(src[pos]) {
 				pos++
 			}
-			tokens = append(tokens, Token{Kind: TokNumber, Line: line})
+			tokens = append(tokens, Token{Kind: TokNumber, OrigText: src[start:pos], Line: line})
 			continue
 		}
 
@@ -161,9 +167,9 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 			}
 			word := src[start:pos]
 			if kws[word] {
-				tokens = append(tokens, Token{TokKeyword, word, line})
+				tokens = append(tokens, Token{Kind: TokKeyword, Text: word, Line: line})
 			} else {
-				tokens = append(tokens, Token{TokIdent, "", line})
+				tokens = append(tokens, Token{Kind: TokIdent, OrigText: word, Line: line})
 			}
 			continue
 		}
@@ -172,7 +178,7 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 		if pos+2 < n {
 			three := src[pos : pos+3]
 			if isThreeCharOp(three) {
-				tokens = append(tokens, Token{TokOperator, three, line})
+				tokens = append(tokens, Token{Kind: TokOperator, Text: three, Line: line})
 				pos += 3
 				continue
 			}
@@ -182,14 +188,14 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 		if pos+1 < n {
 			two := src[pos : pos+2]
 			if isTwoCharOp(two) {
-				tokens = append(tokens, Token{TokOperator, two, line})
+				tokens = append(tokens, Token{Kind: TokOperator, Text: two, Line: line})
 				pos += 2
 				continue
 			}
 		}
 
 		// Single-character operator or punctuation.
-		tokens = append(tokens, Token{TokOperator, src[pos : pos+1], line})
+		tokens = append(tokens, Token{Kind: TokOperator, Text: src[pos : pos+1], Line: line})
 		pos++
 	}
 

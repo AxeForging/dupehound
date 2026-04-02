@@ -8,9 +8,18 @@ type CloneInstance struct {
 	Lines     []string `json:"lines"`
 }
 
+// Clone type constants.
+const (
+	CloneType1 = "type-1" // token-for-token identical (same kinds AND same text)
+	CloneType2 = "type-2" // identical token structure, differing only in identifier/literal values
+	CloneType3 = "type-3" // near-miss: structurally similar with small differences (future)
+)
+
 // Clone represents a group of identical code blocks found in multiple locations.
 type Clone struct {
 	Hash       string          `json:"hash"`
+	Type       string          `json:"type"`
+	Similarity float64         `json:"similarity"`
 	LineCount  int             `json:"line_count"`
 	TokenCount int             `json:"token_count"`
 	Instances  []CloneInstance `json:"instances"`
