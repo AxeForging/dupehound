@@ -1,0 +1,22 @@
+dupehound is a multi-language static analysis tool for detecting code duplication (type-1, type-2, and type-3 clones).
+It uses a token-based sliding window algorithm with FNV-64a hashing. The core packages are:
+  - services/tokenizer.go  — lexer that normalizes source into token streams
+  - services/detector.go   — sliding window hash + maximal block merge algorithm
+  - services/scanner.go    — file walking, language detection, orchestration
+  - services/reporter.go   — text/JSON/SARIF output formatting
+
+Focus your review on:
+  - Correctness of clone detection logic (false positives, false negatives, edge cases)
+  - Lexer correctness (comment stripping, string literal handling, keyword disambiguation)
+  - Performance regressions in hot paths (hashing, indexing, window sweeping)
+  - Exit code contract: exit 1 = clones found, exit 2 = tool error, exit 0 = clean
+  - Test coverage gaps — missing edge cases in tokenizer or detector
+  - Off-by-one errors in line range reporting (StartLine/EndLine accuracy)
+  - Concurrency safety if any goroutines are introduced
+  - Error wrapping — errors should use %w so callers can use errors.Is
+
+Do NOT comment on:
+  - Minor naming style preferences
+  - Reordering of import groups (gofumpt handles this)
+  - Adding comments to self-evident code
+  - Whitespace or formatting (gofumpt handles this)

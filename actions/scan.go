@@ -73,13 +73,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	outFile := c.String("output")
 	if outFile == "" {
 		fmt.Print(output)
-		return nil
+	} else {
+		if err := os.WriteFile(outFile, []byte(output), 0o644); err != nil {
+			return fmt.Errorf("write output file: %w", err)
+		}
+		helpers.Log.Info().Str("file", outFile).Msg("results written")
 	}
 
-	if err := os.WriteFile(outFile, []byte(output), 0o644); err != nil {
-		return fmt.Errorf("write output file: %w", err)
+	if report.TotalClones > 0 && !c.Bool("exit-zero") {
+		return helpers.ErrClonesFound
 	}
-
-	helpers.Log.Info().Str("file", outFile).Msg("results written")
 	return nil
 }

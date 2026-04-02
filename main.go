@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -32,7 +33,7 @@ func main() {
 			Name:    "scan",
 			Aliases: []string{"s"},
 			Usage:   "Scan a directory or file for duplicate code",
-			Flags:   []cli.Flag{pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag, verboseFlag, excludeFlag, languageFlag},
+			Flags:   []cli.Flag{pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag, verboseFlag, excludeFlag, languageFlag, exitZeroFlag},
 			Action:  scanAction.Execute,
 		},
 		{
@@ -48,6 +49,11 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		helpers.Log.Fatal().Err(err).Msg("fatal error")
+		if errors.Is(err, helpers.ErrClonesFound) {
+			// Clones already printed — exit 1 to signal findings to the caller.
+			os.Exit(1)
+		}
+		helpers.Log.Error().Err(err).Msg("error")
+		os.Exit(2)
 	}
 }
