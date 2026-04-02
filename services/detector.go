@@ -230,7 +230,7 @@ func Detect(files []TokenizedFile, minTokens int) []domain.Clone {
 // the original token text across all instances.
 // If all tokens (including identifier names, literals) are identical → type-1 (similarity 1.0).
 // If structure matches but some identifiers/literals differ → type-2 (similarity 1.0).
-// Type-3 will be set by the fuzzy detector (future).
+// Type-3 (future, #4) will introduce fractional similarity scores (0.5–<1.0).
 func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (string, float64) {
 	// Caller guarantees len(starts) >= 2.
 	ref := files[starts[0].FileIdx].Tokens[starts[0].Pos : starts[0].Pos+totalTokens]

@@ -648,7 +648,7 @@ func TestConfigFile_LanguageFromConfig(t *testing.T) {
 
 // --- Clone type labels and similarity ---
 
-func TestCloneType_TextOutput_ContainsTypeLabel(t *testing.T) {
+func TestCloneType_TextOutput_Type1ForIdenticalCode(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
 	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
@@ -660,35 +660,17 @@ func TestCloneType_TextOutput_ContainsTypeLabel(t *testing.T) {
 		t.Fatalf("scan failed: %v\n%s", err, string(out))
 	}
 	output := string(out)
-	if !strings.Contains(output, "type-1") && !strings.Contains(output, "type-2") {
-		t.Errorf("text output should contain clone type label, got: %s", output)
+	if !strings.Contains(output, "type-1") {
+		t.Errorf("identical code should be type-1, got: %s", output)
 	}
-	if !strings.Contains(output, "similarity:") {
-		t.Errorf("text output should contain similarity score, got: %s", output)
-	}
-}
-
-func TestCloneType_TextOutput_Type1ForIdenticalCode(t *testing.T) {
-	bin := buildBinary(t)
-	dir := t.TempDir()
-	// Identical code → type-1
-	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
-	writeFile(t, dir, "a.go", "package main\n\n"+block)
-	writeFile(t, dir, "b.go", "package main\n\n"+block)
-
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero").CombinedOutput()
-	if err != nil {
-		t.Fatalf("scan failed: %v\n%s", err, string(out))
-	}
-	if !strings.Contains(string(out), "type-1") {
-		t.Errorf("identical code should be type-1, got: %s", string(out))
+	if !strings.Contains(output, "similarity: 1.00") {
+		t.Errorf("type-1 should have similarity 1.00, got: %s", output)
 	}
 }
 
 func TestCloneType_TextOutput_Type2ForRenamedVariable(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	// Same structure, renamed variable → type-2
 	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tresult := compute()\n\tvalidate(result)\n\tstore(result)\n\tnotify(result)\n\treturn result\n}\n")
 	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\toutput := compute()\n\tvalidate(output)\n\tstore(output)\n\tnotify(output)\n\treturn output\n}\n")
 
@@ -701,15 +683,15 @@ func TestCloneType_TextOutput_Type2ForRenamedVariable(t *testing.T) {
 	}
 }
 
-func TestCloneType_JSONOutput_HasTypeAndSimilarity(t *testing.T) {
+func TestCloneType_JSONOutput_CorrectType(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
+	// Identical code → JSON should report type-1 with similarity 1.0.
 	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 
-	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json")
-	out, err := cmd.Output()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
@@ -721,29 +703,27 @@ func TestCloneType_JSONOutput_HasTypeAndSimilarity(t *testing.T) {
 		t.Fatal("expected clones in JSON output")
 	}
 	for _, c := range report.Clones {
-		if c.Type == "" {
-			t.Error("JSON clone missing type field")
+		if c.Type != "type-1" {
+			t.Errorf("identical code in JSON should be type-1, got %q", c.Type)
 		}
-		if c.Similarity <= 0 {
-			t.Errorf("JSON clone has non-positive similarity: %f", c.Similarity)
+		if c.Similarity != 1.0 {
+			t.Errorf("type-1 similarity should be 1.0, got %f", c.Similarity)
 		}
 	}
 }
 
-func TestCloneType_SARIFOutput_HasProperties(t *testing.T) {
+func TestCloneType_SARIFOutput_CorrectProperties(t *testing.T) {
 	bin := buildBinary(t)
 	dir := t.TempDir()
-	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
-	writeFile(t, dir, "a.go", "package main\n\n"+block)
-	writeFile(t, dir, "b.go", "package main\n\n"+block)
+	// Renamed variable → SARIF should report type-2 with similarity 1.0.
+	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tresult := compute()\n\tvalidate(result)\n\tstore(result)\n\tnotify(result)\n\treturn result\n}\n")
+	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\toutput := compute()\n\tvalidate(output)\n\tstore(output)\n\tnotify(output)\n\treturn output\n}\n")
 
-	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "sarif")
-	out, err := cmd.Output()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "sarif").Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
 
-	// Parse the SARIF output and check properties.
 	var sarif struct {
 		Runs []struct {
 			Results []struct {
@@ -761,10 +741,38 @@ func TestCloneType_SARIFOutput_HasProperties(t *testing.T) {
 		t.Fatal("expected SARIF results")
 	}
 	result := sarif.Runs[0].Results[0]
-	if result.Properties.CloneType == "" {
-		t.Error("SARIF result missing cloneType property")
+	if result.Properties.CloneType != "type-2" {
+		t.Errorf("renamed variable in SARIF should be type-2, got %q", result.Properties.CloneType)
 	}
-	if result.Properties.Similarity <= 0 {
-		t.Errorf("SARIF result has non-positive similarity: %f", result.Properties.Similarity)
+	if result.Properties.Similarity != 1.0 {
+		t.Errorf("type-2 similarity should be 1.0, got %f", result.Properties.Similarity)
+	}
+}
+
+func TestCloneType_MixedThreeWay_ClassifiedAsType2(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	// Files A and B are identical, file C has a renamed variable.
+	// The clone group should be classified as type-2 (not all instances match).
+	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tresult := compute()\n\tvalidate(result)\n\tstore(result)\n\tnotify(result)\n\treturn result\n}\n")
+	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tresult := compute()\n\tvalidate(result)\n\tstore(result)\n\tnotify(result)\n\treturn result\n}\n")
+	writeFile(t, dir, "c.go", "package main\n\nfunc process() {\n\toutput := compute()\n\tvalidate(output)\n\tstore(output)\n\tnotify(output)\n\treturn output\n}\n")
+
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, string(out))
+	}
+	if len(report.Clones) == 0 {
+		t.Fatal("expected clones")
+	}
+	// Find the clone with 3 instances — it must be type-2.
+	for _, c := range report.Clones {
+		if len(c.Instances) == 3 && c.Type != "type-2" {
+			t.Errorf("3-way clone with one renamed file should be type-2, got %q", c.Type)
+		}
 	}
 }

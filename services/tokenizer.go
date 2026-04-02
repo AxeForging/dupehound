@@ -20,12 +20,13 @@ const (
 )
 
 // Token is a normalized lexical unit.
-// For TokIdent, TokNumber, and TokString, Text is empty — all instances hash identically,
-// enabling type-2 clone detection (renamed variables, different literals).
-// For TokKeyword and TokOperator, Text carries the verbatim value so that
-// `if` ≠ `for` and `+` ≠ `-` in clone comparisons.
-// OrigText preserves the original source text for Ident/Number/String tokens,
-// used after detection to classify clones as type-1 vs type-2.
+//
+// Text is only set for TokKeyword and TokOperator (verbatim value for hashing,
+// so `if` ≠ `for` and `+` ≠ `-`). It is empty for Ident/Number/String.
+//
+// OrigText is only set for TokIdent, TokNumber, and TokString (original source
+// text, used after detection to classify clones as type-1 vs type-2).
+// It is empty for Keyword/Operator.
 type Token struct {
 	Kind     TokenKind
 	Text     string // empty for Ident/Number/String; verbatim for Keyword/Operator
