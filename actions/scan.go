@@ -28,7 +28,10 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	// Load config file: explicit --config flag, then auto-discover from cwd.
 	configPath := c.String("config")
 	if configPath == "" {
-		wd, _ := os.Getwd()
+		wd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("get working directory: %w", err)
+		}
 		configPath = services.FindConfig(wd)
 	}
 	cfg, err := services.LoadConfig(configPath)
