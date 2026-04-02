@@ -396,6 +396,112 @@ func TestExitCode_ToolError_ExitsTwo(t *testing.T) {
 	}
 }
 
+// --- Duplication threshold ---
+
+func TestMinDuplication_ExceedsThreshold_ExitsOne(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// Low threshold — duplication is well above 1%, should exit 1.
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--min-duplication", "1")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("expected exit 1 when duplication exceeds threshold, got 0")
+	}
+	if code := cmd.ProcessState.ExitCode(); code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestMinDuplication_BelowThreshold_ExitsZero(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// High threshold — duplication is below 100%, should exit 0.
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--min-duplication", "100")
+	if err := cmd.Run(); err != nil {
+		t.Errorf("expected exit 0 when duplication below threshold, got: %v (code %d)", err, cmd.ProcessState.ExitCode())
+	}
+}
+
+func TestMinDuplication_Disabled_IgnoresThreshold(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// min-duplication=0 (default) means disabled — exit-zero should work normally.
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero")
+	if err := cmd.Run(); err != nil {
+		t.Errorf("expected exit 0 with --exit-zero and no threshold, got: %v (code %d)", err, cmd.ProcessState.ExitCode())
+	}
+}
+
+// --- JSON output includes new fields ---
+
+func TestJSON_IncludesDuplicationStats(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func dup() {\n\ta := compute()\n\tb := validate(a)\n\tc := store(b)\n\treturn c\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--format", "json", "--exit-zero")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+
+	var report domain.Report
+	if err := json.Unmarshal(out, &report); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if report.TotalLines == 0 {
+		t.Error("expected total_lines > 0")
+	}
+	if report.DuplicationPct <= 0 {
+		t.Error("expected duplication_pct > 0 when clones exist")
+	}
+	if len(report.FileStats) == 0 {
+		t.Error("expected file_stats to be non-empty when clones exist")
+	}
+	for _, fs := range report.FileStats {
+		if fs.TotalLines == 0 {
+			t.Errorf("file_stats entry %q has total_lines=0", fs.File)
+		}
+		if fs.DuplicationPct <= 0 {
+			t.Errorf("file_stats entry %q has duplication_pct <= 0", fs.File)
+		}
+	}
+}
+
+func TestText_IncludesDuplicationPercentage(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func dup() {\n\ta := compute()\n\tb := validate(a)\n\tc := store(b)\n\treturn c\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	output := string(out)
+	if !strings.Contains(output, "%") {
+		t.Error("text output should contain duplication percentage")
+	}
+	if !strings.Contains(output, "Total lines") {
+		t.Error("text output should contain Total lines")
+	}
+}
+
 // --- Config file ---
 
 func TestConfigFile_SettingsRespected(t *testing.T) {

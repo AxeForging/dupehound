@@ -1,6 +1,7 @@
 package services
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,6 +54,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	totalFiles := len(files)
 	var tokenizedFiles []TokenizedFile
 	scannedFiles := 0
+	fileLineCount := make(map[string]int) // path → total lines
 
 	for _, path := range files {
 		lang := DetectLanguage(path)
@@ -66,7 +68,10 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 			continue
 		}
 
-		tf := BuildTokenizedFile(path, string(data), lang)
+		content := string(data)
+		fileLineCount[path] = countLines(content)
+
+		tf := BuildTokenizedFile(path, content, lang)
 
 		// Skip files with too few tokens to form even one window.
 		if len(tf.Tokens) < minTokens {
@@ -92,11 +97,26 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	clones = deduplicateOverlapping(clones)
 	duplicateLines := countDuplicateLines(clones)
 
+	totalLines := 0
+	for _, lc := range fileLineCount {
+		totalLines += lc
+	}
+
+	var duplicationPct float64
+	if totalLines > 0 {
+		duplicationPct = math.Round(float64(duplicateLines)/float64(totalLines)*1000) / 10
+	}
+
+	fileStats := buildFileStats(clones, fileLineCount)
+
 	return &domain.Report{
 		TotalFiles:     totalFiles,
 		ScannedFiles:   scannedFiles,
 		TotalClones:    len(clones),
+		TotalLines:     totalLines,
 		DuplicateLines: duplicateLines,
+		DuplicationPct: duplicationPct,
+		FileStats:      fileStats,
 		Clones:         clones,
 	}, nil
 }
@@ -233,6 +253,55 @@ func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
 	}
 
 	return kept
+}
+
+// countLines returns the number of lines in a string.
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if s[len(s)-1] != '\n' {
+		n++
+	}
+	return n
+}
+
+// buildFileStats creates per-file duplication metrics from clones and line counts.
+func buildFileStats(clones []domain.Clone, fileLineCount map[string]int) []domain.FileStats {
+	fileDupLines := make(map[string]map[int]bool)
+	for _, c := range clones {
+		for _, inst := range c.Instances {
+			if fileDupLines[inst.File] == nil {
+				fileDupLines[inst.File] = make(map[int]bool)
+			}
+			for ln := inst.StartLine; ln <= inst.EndLine; ln++ {
+				fileDupLines[inst.File][ln] = true
+			}
+		}
+	}
+
+	var stats []domain.FileStats
+	for file, dupLines := range fileDupLines {
+		totalLines := fileLineCount[file]
+		if totalLines == 0 {
+			totalLines = 1
+		}
+		dl := len(dupLines)
+		pct := math.Round(float64(dl)/float64(totalLines)*1000) / 10
+		stats = append(stats, domain.FileStats{
+			File:           file,
+			TotalLines:     fileLineCount[file],
+			DuplicateLines: dl,
+			DuplicationPct: pct,
+		})
+	}
+
+	sort.Slice(stats, func(i, j int) bool {
+		return stats[i].DuplicationPct > stats[j].DuplicationPct
+	})
+
+	return stats
 }
 
 // countDuplicateLines counts distinct (file, line) pairs across all clones.

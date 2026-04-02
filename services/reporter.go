@@ -40,36 +40,6 @@ func FormatReport(report *domain.Report, format string, opts FormatOptions) (str
 
 // --- shared helpers ---
 
-type fileStats struct {
-	path       string
-	dupLines   int
-	cloneCount int
-}
-
-func buildHotspots(clones []domain.Clone, scanPath string) []fileStats {
-	fileMap := map[string]*fileStats{}
-	for _, c := range clones {
-		for _, inst := range c.Instances {
-			rel := relPath(inst.File, scanPath)
-			fs, ok := fileMap[rel]
-			if !ok {
-				fs = &fileStats{path: rel}
-				fileMap[rel] = fs
-			}
-			fs.dupLines += inst.EndLine - inst.StartLine + 1
-			fs.cloneCount++
-		}
-	}
-	hotspots := make([]fileStats, 0, len(fileMap))
-	for _, fs := range fileMap {
-		hotspots = append(hotspots, *fs)
-	}
-	sort.Slice(hotspots, func(i, j int) bool {
-		return hotspots[i].dupLines > hotspots[j].dupLines
-	})
-	return hotspots
-}
-
 func sortClonesByImpact(clones []domain.Clone) []domain.Clone {
 	sorted := make([]domain.Clone, len(clones))
 	copy(sorted, clones)
@@ -98,6 +68,13 @@ func typeBreakdown(clones []domain.Clone) string {
 	return strings.Join(parts, ", ")
 }
 
+func topN(total int, defaultN int, verbose bool) int {
+	if verbose || total <= defaultN {
+		return total
+	}
+	return defaultN
+}
+
 func relPath(absPath, basePath string) string {
 	if basePath == "" {
 		return absPath
@@ -117,8 +94,9 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 	fmt.Fprintf(&b, "dupehound scan results\n")
 	fmt.Fprintf(&b, "======================\n")
 	fmt.Fprintf(&b, "Files scanned : %d / %d\n", report.ScannedFiles, report.TotalFiles)
+	fmt.Fprintf(&b, "Total lines   : %d\n", report.TotalLines)
 	fmt.Fprintf(&b, "Clones found  : %d\n", report.TotalClones)
-	fmt.Fprintf(&b, "Duplicate lines: %d\n", report.DuplicateLines)
+	fmt.Fprintf(&b, "Duplicate lines: %d (%.1f%%)\n", report.DuplicateLines, report.DuplicationPct)
 
 	if report.TotalClones == 0 {
 		fmt.Fprintf(&b, "\nNo duplicates found.\n")
@@ -127,26 +105,21 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 
 	fmt.Fprintf(&b, "Breakdown     : %s\n", typeBreakdown(report.Clones))
 
-	hotspots := buildHotspots(report.Clones, opts.ScanPath)
-	limit := defaultTopHotspots
-	if opts.Verbose || len(hotspots) <= limit {
-		limit = len(hotspots)
-	}
-	fmt.Fprintf(&b, "\nHotspots (files with most duplication):\n")
-	for i := 0; i < limit; i++ {
-		hs := hotspots[i]
-		fmt.Fprintf(&b, "  %5d lines  %-60s (%d clones)\n", hs.dupLines, hs.path, hs.cloneCount)
-	}
-	if len(hotspots) > limit {
-		fmt.Fprintf(&b, "  ... %d more files (use --verbose to show all)\n", len(hotspots)-limit)
+	if len(report.FileStats) > 0 {
+		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
+		fmt.Fprintf(&b, "\nHotspots (files by duplication %%):\n")
+		for i := 0; i < limit; i++ {
+			fs := report.FileStats[i]
+			rel := relPath(fs.File, opts.ScanPath)
+			fmt.Fprintf(&b, "  %5.1f%%  %4d/%4d lines  %s\n", fs.DuplicationPct, fs.DuplicateLines, fs.TotalLines, rel)
+		}
+		if len(report.FileStats) > limit {
+			fmt.Fprintf(&b, "  ... %d more files (use --verbose to show all)\n", len(report.FileStats)-limit)
+		}
 	}
 
 	sorted := sortClonesByImpact(report.Clones)
-
-	cloneLimit := defaultTopClones
-	if opts.Verbose || len(sorted) <= cloneLimit {
-		cloneLimit = len(sorted)
-	}
+	cloneLimit := topN(len(sorted), defaultTopClones, opts.Verbose)
 
 	fmt.Fprintf(&b, "\nTop clones (by impact):\n")
 	for i := 0; i < cloneLimit; i++ {
@@ -197,8 +170,9 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	fmt.Fprintf(&b, "| Metric | Value |\n")
 	fmt.Fprintf(&b, "|--------|-------|\n")
 	fmt.Fprintf(&b, "| Files scanned | %d / %d |\n", report.ScannedFiles, report.TotalFiles)
+	fmt.Fprintf(&b, "| Total lines | %d |\n", report.TotalLines)
 	fmt.Fprintf(&b, "| Clones found | %d |\n", report.TotalClones)
-	fmt.Fprintf(&b, "| Duplicate lines | %d |\n", report.DuplicateLines)
+	fmt.Fprintf(&b, "| Duplicate lines | %d (%.1f%%) |\n", report.DuplicateLines, report.DuplicationPct)
 
 	if report.TotalClones == 0 {
 		fmt.Fprintf(&b, "\nNo duplicates found.\n")
@@ -208,38 +182,34 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	fmt.Fprintf(&b, "| Breakdown | %s |\n", typeBreakdown(report.Clones))
 
 	// --- Hotspots ---
-	hotspots := buildHotspots(report.Clones, opts.ScanPath)
-	limit := defaultTopHotspots
-	if opts.Verbose || len(hotspots) <= limit {
-		limit = len(hotspots)
-	}
+	if len(report.FileStats) > 0 {
+		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
 
-	fmt.Fprintf(&b, "\n### Hotspots\n\n")
-	fmt.Fprintf(&b, "| Dup Lines | File | Clones |\n")
-	fmt.Fprintf(&b, "|----------:|------|-------:|\n")
-	for i := 0; i < limit; i++ {
-		hs := hotspots[i]
-		fmt.Fprintf(&b, "| %d | `%s` | %d |\n", hs.dupLines, hs.path, hs.cloneCount)
-	}
-
-	if len(hotspots) > limit {
-		fmt.Fprintf(&b, "\n<details>\n<summary>%d more files...</summary>\n\n", len(hotspots)-limit)
-		fmt.Fprintf(&b, "| Dup Lines | File | Clones |\n")
-		fmt.Fprintf(&b, "|----------:|------|-------:|\n")
-		for i := limit; i < len(hotspots); i++ {
-			hs := hotspots[i]
-			fmt.Fprintf(&b, "| %d | `%s` | %d |\n", hs.dupLines, hs.path, hs.cloneCount)
+		fmt.Fprintf(&b, "\n### Hotspots\n\n")
+		fmt.Fprintf(&b, "| Dup %% | Dup Lines | Total Lines | File |\n")
+		fmt.Fprintf(&b, "|------:|----------:|------------:|------|\n")
+		for i := 0; i < limit; i++ {
+			fs := report.FileStats[i]
+			rel := relPath(fs.File, opts.ScanPath)
+			fmt.Fprintf(&b, "| %.1f%% | %d | %d | `%s` |\n", fs.DuplicationPct, fs.DuplicateLines, fs.TotalLines, rel)
 		}
-		fmt.Fprintf(&b, "\n</details>\n")
+
+		if len(report.FileStats) > limit {
+			fmt.Fprintf(&b, "\n<details>\n<summary>%d more files...</summary>\n\n", len(report.FileStats)-limit)
+			fmt.Fprintf(&b, "| Dup %% | Dup Lines | Total Lines | File |\n")
+			fmt.Fprintf(&b, "|------:|----------:|------------:|------|\n")
+			for i := limit; i < len(report.FileStats); i++ {
+				fs := report.FileStats[i]
+				rel := relPath(fs.File, opts.ScanPath)
+				fmt.Fprintf(&b, "| %.1f%% | %d | %d | `%s` |\n", fs.DuplicationPct, fs.DuplicateLines, fs.TotalLines, rel)
+			}
+			fmt.Fprintf(&b, "\n</details>\n")
+		}
 	}
 
 	// --- Top clones ---
 	sorted := sortClonesByImpact(report.Clones)
-
-	cloneLimit := defaultTopClones
-	if opts.Verbose || len(sorted) <= cloneLimit {
-		cloneLimit = len(sorted)
-	}
+	cloneLimit := topN(len(sorted), defaultTopClones, opts.Verbose)
 
 	fmt.Fprintf(&b, "\n### Top clones (by impact)\n\n")
 	for i := 0; i < cloneLimit; i++ {

@@ -34,7 +34,7 @@ func main() {
 			Name:    "scan",
 			Aliases: []string{"s"},
 			Usage:   "Scan a directory or file for duplicate code",
-			Flags:   []cli.Flag{pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag, verboseFlag, excludeFlag, languageFlag, exitZeroFlag, similarityFlag, maxBucketFlag, configFlag},
+			Flags:   []cli.Flag{pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag, verboseFlag, excludeFlag, languageFlag, exitZeroFlag, similarityFlag, maxBucketFlag, minDuplicationFlag, configFlag},
 			Action:  scanAction.Execute,
 		},
 		{
@@ -58,8 +58,7 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		if errors.Is(err, helpers.ErrClonesFound) {
-			// Clones already printed — exit 1 to signal findings to the caller.
+		if errors.Is(err, helpers.ErrClonesFound) || errors.Is(err, helpers.ErrThresholdExceeded) {
 			os.Exit(1)
 		}
 		helpers.Log.Error().Err(err).Msg("error")
