@@ -395,3 +395,117 @@ func TestExitCode_ToolError_ExitsTwo(t *testing.T) {
 		t.Errorf("expected exit code 2 for tool error, got %d", code)
 	}
 }
+
+// --- Config file ---
+
+func TestConfigFile_SettingsRespected(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// Write config with min-tokens=10 and exit-zero=true.
+	writeFile(t, dir, ".dupehound.yml", "scan:\n  path: "+dir+"\n  min-tokens: 10\n  exit-zero: true\n")
+
+	// Run scan with no flags — config should supply path and min-tokens.
+	cmd := exec.Command(bin, "scan", "--config", filepath.Join(dir, ".dupehound.yml"))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan with config failed: %v\n%s", err, string(out))
+	}
+	if strings.Contains(string(out), "No duplicates found") {
+		t.Errorf("expected clones to be found via config, got: %s", string(out))
+	}
+}
+
+func TestConfigFile_CLIFlagOverridesConfig(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// Config sets min-tokens=10 (would find clones), but CLI overrides with 1000 (won't find any).
+	writeFile(t, dir, ".dupehound.yml", "scan:\n  min-tokens: 10\n")
+
+	out, err := exec.Command(bin, "scan",
+		"--config", filepath.Join(dir, ".dupehound.yml"),
+		"--path", dir,
+		"--min-tokens", "1000",
+		"--exit-zero",
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "No duplicates found") {
+		t.Errorf("expected CLI --min-tokens=1000 to override config, got: %s", string(out))
+	}
+}
+
+func TestConfigFile_ExcludeFromConfig(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.gen.go", "package main\n\n"+block)
+
+	writeFile(t, dir, ".dupehound.yml", "scan:\n  min-tokens: 10\n  exclude:\n    - \"*.gen.go\"\n  exit-zero: true\n")
+
+	out, err := exec.Command(bin, "scan",
+		"--config", filepath.Join(dir, ".dupehound.yml"),
+		"--path", dir,
+	).CombinedOutput()
+	if err != nil {
+		t.Fatalf("scan failed: %v\n%s", err, string(out))
+	}
+	if !strings.Contains(string(out), "No duplicates found") {
+		t.Errorf("expected *.gen.go exclusion from config to prevent clone, got: %s", string(out))
+	}
+}
+
+func TestInitCommand_CreatesConfigFile(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+
+	cmd := exec.Command(bin, "init")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init failed: %v\n%s", err, string(out))
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, ".dupehound.yml"))
+	if err != nil {
+		t.Fatal(".dupehound.yml not created")
+	}
+	if !strings.Contains(string(data), "min-tokens") {
+		t.Error(".dupehound.yml missing expected fields")
+	}
+}
+
+func TestInitCommand_FailsIfAlreadyExists(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, ".dupehound.yml", "scan:\n  min-tokens: 10\n")
+
+	cmd := exec.Command(bin, "init")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Errorf("expected error when .dupehound.yml already exists, got: %s", string(out))
+	}
+}
+
+func TestInitCommand_ForceOverwrites(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, ".dupehound.yml", "scan:\n  min-tokens: 10\n")
+
+	cmd := exec.Command(bin, "init", "--force")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("init --force failed: %v\n%s", err, string(out))
+	}
+}

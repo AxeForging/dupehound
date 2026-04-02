@@ -22,6 +22,7 @@ func main() {
 
 	scannerSvc := services.NewScannerService()
 	scanAction := actions.NewScanAction(scannerSvc)
+	initAction := actions.NewInitAction()
 
 	app := cli.NewApp()
 	app.Name = "dupehound"
@@ -33,8 +34,16 @@ func main() {
 			Name:    "scan",
 			Aliases: []string{"s"},
 			Usage:   "Scan a directory or file for duplicate code",
-			Flags:   []cli.Flag{pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag, verboseFlag, excludeFlag, languageFlag, exitZeroFlag},
+			Flags:   []cli.Flag{pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag, verboseFlag, excludeFlag, languageFlag, exitZeroFlag, configFlag},
 			Action:  scanAction.Execute,
+		},
+		{
+			Name:  "init",
+			Usage: "Create a starter .dupehound.yml config file in the current directory",
+			Flags: []cli.Flag{
+				cli.BoolFlag{Name: "force", Usage: "Overwrite existing .dupehound.yml"},
+			},
+			Action: initAction.Execute,
 		},
 		{
 			Name:  "version",
