@@ -7,10 +7,36 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
 )
+
+// validateGitRef rejects refs that could be interpreted as git flags or contain
+// shell-unsafe characters. Accepts alphanumerics, dots, slashes, hyphens,
+// underscores, tildes, carets, and at-signs — the characters valid in git refs.
+func validateGitRef(ref string) error {
+	if ref == "" {
+		return fmt.Errorf("git ref must not be empty")
+	}
+	// A ref starting with '-' would be interpreted as a git option flag.
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("invalid git ref %q: must not start with '-'", ref)
+	}
+	for _, r := range ref {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			continue
+		}
+		switch r {
+		case '.', '/', '-', '_', '~', '^', '@', '{', '}', '+':
+			// All valid in git ref names.
+		default:
+			return fmt.Errorf("invalid git ref %q: unexpected character %q", ref, r)
+		}
+	}
+	return nil
+}
 
 // changedLineRange holds changed line ranges for a file.
 type changedLineRange struct {
@@ -20,6 +46,9 @@ type changedLineRange struct {
 // getChangedLines runs git diff to get changed files and line ranges since a ref.
 // Returns map[absFilePath][]changedLineRange, total changed file count, error.
 func getChangedLines(repoRoot, ref string) (map[string][]changedLineRange, int, error) {
+	if err := validateGitRef(ref); err != nil {
+		return nil, 0, err
+	}
 	// Get list of changed files.
 	cmd := exec.Command("git", "diff", "--name-only", ref+"...HEAD")
 	cmd.Dir = repoRoot

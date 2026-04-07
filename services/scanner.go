@@ -318,20 +318,17 @@ func isHiddenOrVendored(name string) bool {
 // matchGlob matches path against a glob pattern using gobwas/glob for ** support.
 // Falls back to filepath.Match when the pattern contains no **.
 func matchGlob(pattern, path string) bool {
-	// Try full path first.
 	if strings.Contains(pattern, "**") {
+		// ** patterns must match the full (normalized) path.
 		g, err := glob.Compile(pattern, '/')
-		if err == nil && g.Match(path) {
-			return true
+		if err != nil {
+			return false
 		}
-		// Also try with just the base name for patterns like "**/*.go".
-		g2, err2 := glob.Compile(pattern, '/')
-		if err2 == nil && g2.Match(filepath.Base(path)) {
-			return true
-		}
-		return false
+		return g.Match(path)
 	}
-	// No **, use stdlib filepath.Match on both base and full path.
+	// No **, use stdlib filepath.Match on both base name and full path so that
+	// plain patterns like "*.go" or "*_test.go" work regardless of how the path
+	// was supplied.
 	base := filepath.Base(path)
 	if ok, _ := filepath.Match(pattern, base); ok {
 		return true

@@ -114,3 +114,34 @@ func TestGetChangedLines_InvalidRef(t *testing.T) {
 		t.Log("warning: expected an error for invalid git ref in non-repo dir, but got nil")
 	}
 }
+
+// TestValidateGitRef verifies that refs starting with '-' or containing unusual
+// characters are rejected, while valid refs are accepted.
+func TestValidateGitRef(t *testing.T) {
+	valid := []string{
+		"main", "origin/main", "v1.2.3", "HEAD~1", "abc1234",
+		"feature/my-branch", "refs/heads/main", "some_tag",
+	}
+	for _, ref := range valid {
+		if err := validateGitRef(ref); err != nil {
+			t.Errorf("validateGitRef(%q) should be valid, got error: %v", ref, err)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"-p",
+		"--output=/tmp/evil",
+		"--upload-pack=evil",
+		"-x",
+		"ref with spaces",
+		"ref;evil",
+		"ref`evil`",
+		"ref$evil",
+	}
+	for _, ref := range invalid {
+		if err := validateGitRef(ref); err == nil {
+			t.Errorf("validateGitRef(%q) should be invalid, but got nil error", ref)
+		}
+	}
+}
