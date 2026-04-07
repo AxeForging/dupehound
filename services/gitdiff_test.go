@@ -1,6 +1,8 @@
 package services
 
 import (
+	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/AxeForging/dupehound/domain"
@@ -104,44 +106,57 @@ func TestOverlapsChangedLines(t *testing.T) {
 	}
 }
 
-// TestGetChangedLines_InvalidRef verifies graceful handling of invalid git ref.
+// TestGetChangedLines_InvalidRef verifies graceful handling of an unknown ref.
 func TestGetChangedLines_InvalidRef(t *testing.T) {
-	// Use a temp dir that is not a git repo.
+	// Use a temp dir that is not a git repo — getChangedLines should return an error.
 	dir := t.TempDir()
 	_, _, err := getChangedLines(dir, "nonexistent-ref-xyz")
-	// Should return an error, not panic.
 	if err == nil {
-		t.Log("warning: expected an error for invalid git ref in non-repo dir, but got nil")
+		t.Log("warning: expected an error for unknown ref in non-repo dir, but got nil")
 	}
 }
 
-// TestValidateGitRef verifies that refs starting with '-' or containing unusual
-// characters are rejected, while valid refs are accepted.
-func TestValidateGitRef(t *testing.T) {
-	valid := []string{
-		"main", "origin/main", "v1.2.3", "HEAD~1", "abc1234",
-		"feature/my-branch", "refs/heads/main", "some_tag",
-	}
-	for _, ref := range valid {
-		if err := validateGitRef(ref); err != nil {
-			t.Errorf("validateGitRef(%q) should be valid, got error: %v", ref, err)
-		}
-	}
-
-	invalid := []string{
-		"",
+// TestResolveGitRef_DashPrefix verifies that refs starting with '-' are rejected
+// before git is ever invoked, preventing flag-injection attacks.
+func TestResolveGitRef_DashPrefix(t *testing.T) {
+	dir := t.TempDir()
+	dangerous := []string{
 		"-p",
 		"--output=/tmp/evil",
 		"--upload-pack=evil",
 		"-x",
-		"ref with spaces",
-		"ref;evil",
-		"ref`evil`",
-		"ref$evil",
+		"",
 	}
-	for _, ref := range invalid {
-		if err := validateGitRef(ref); err == nil {
-			t.Errorf("validateGitRef(%q) should be invalid, but got nil error", ref)
+	for _, ref := range dangerous {
+		_, err := resolveGitRef(dir, ref)
+		if err == nil {
+			t.Errorf("resolveGitRef(%q) should have been rejected before calling git, got nil error", ref)
 		}
+	}
+}
+
+// TestResolveGitRef_ValidSHA verifies that the output of resolveGitRef (when git
+// is available and the ref resolves) is always a hex SHA — safe for use in
+// subsequent git commands.
+func TestResolveGitRef_ValidSHA(t *testing.T) {
+	// Use the actual repo root so we have a real git history to resolve against.
+	// Skip if git is unavailable.
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	repoRoot, err := cmd.Output()
+	if err != nil {
+		t.Skip("git not available or not inside a git repo")
+	}
+	root := strings.TrimSpace(string(repoRoot))
+
+	sha, err := resolveGitRef(root, "HEAD")
+	if err != nil {
+		t.Fatalf("resolveGitRef(HEAD) failed: %v", err)
+	}
+	if !shaPattern.MatchString(sha) {
+		t.Errorf("resolveGitRef(HEAD) returned non-SHA output: %q", sha)
+	}
+	// SHA must be hex only — never starts with '-', never contains spaces or metacharacters.
+	if strings.ContainsAny(sha, " \t;`$-") {
+		t.Errorf("resolveGitRef returned unsafe SHA: %q", sha)
 	}
 }

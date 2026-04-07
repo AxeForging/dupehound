@@ -5,37 +5,45 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
 )
 
-// validateGitRef rejects refs that could be interpreted as git flags or contain
-// shell-unsafe characters. Accepts alphanumerics, dots, slashes, hyphens,
-// underscores, tildes, carets, and at-signs — the characters valid in git refs.
-func validateGitRef(ref string) error {
+// shaPattern matches a full 40-character git SHA-1 or shorter abbreviated SHA (≥4 chars).
+var shaPattern = regexp.MustCompile(`^[0-9a-f]{4,40}$`)
+
+// resolveGitRef resolves a human-readable ref (branch name, tag, HEAD~1, etc.)
+// to its full 40-character SHA using `git rev-parse --verify`. The returned SHA
+// is always safe to embed in subsequent git commands — it contains only lowercase
+// hex characters and can never be misinterpreted as a flag or option.
+func resolveGitRef(repoRoot, ref string) (string, error) {
 	if ref == "" {
-		return fmt.Errorf("git ref must not be empty")
+		return "", fmt.Errorf("git ref must not be empty")
 	}
-	// A ref starting with '-' would be interpreted as a git option flag.
+	// Reject anything that starts with '-' before even calling git, since
+	// exec.Command passes arguments directly to the OS and git would interpret
+	// a leading '-' as a flag (e.g. --upload-pack=, --output=).
 	if strings.HasPrefix(ref, "-") {
-		return fmt.Errorf("invalid git ref %q: must not start with '-'", ref)
+		return "", fmt.Errorf("invalid git ref %q: must not start with '-'", ref)
 	}
-	for _, r := range ref {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			continue
-		}
-		switch r {
-		case '.', '/', '-', '_', '~', '^', '@', '{', '}', '+':
-			// All valid in git ref names.
-		default:
-			return fmt.Errorf("invalid git ref %q: unexpected character %q", ref, r)
-		}
+
+	cmd := exec.Command("git", "rev-parse", "--verify", ref) //nolint:gosec // ref validated above
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --verify %q: %w", ref, err)
 	}
-	return nil
+
+	sha := strings.TrimSpace(string(out))
+	if !shaPattern.MatchString(sha) {
+		// Should never happen with a healthy git installation, but guard anyway.
+		return "", fmt.Errorf("git rev-parse returned unexpected output %q for ref %q", sha, ref)
+	}
+	return sha, nil
 }
 
 // changedLineRange holds changed line ranges for a file.
@@ -44,13 +52,17 @@ type changedLineRange struct {
 }
 
 // getChangedLines runs git diff to get changed files and line ranges since a ref.
+// The ref is first resolved to a SHA so that all downstream git calls use only
+// a fixed hex string — never user-controlled text that could be misread as a flag.
 // Returns map[absFilePath][]changedLineRange, total changed file count, error.
 func getChangedLines(repoRoot, ref string) (map[string][]changedLineRange, int, error) {
-	if err := validateGitRef(ref); err != nil {
+	sha, err := resolveGitRef(repoRoot, ref)
+	if err != nil {
 		return nil, 0, err
 	}
-	// Get list of changed files.
-	cmd := exec.Command("git", "diff", "--name-only", ref+"...HEAD")
+
+	// All git calls below use sha (hex only) — no user input reaches the command line.
+	cmd := exec.Command("git", "diff", "--name-only", sha+"...HEAD")
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
@@ -68,7 +80,7 @@ func getChangedLines(repoRoot, ref string) (map[string][]changedLineRange, int, 
 	result := make(map[string][]changedLineRange)
 	for _, relFile := range changedFiles {
 		absFile := filepath.Join(repoRoot, relFile)
-		ranges, err := getChangedLinesForFile(repoRoot, ref, relFile)
+		ranges, err := getChangedLinesForFile(repoRoot, sha, relFile)
 		if err != nil {
 			helpers.Log.Debug().Str("file", relFile).Err(err).Msg("could not get changed lines for file")
 			// Include entire file as changed on error.
@@ -82,8 +94,9 @@ func getChangedLines(repoRoot, ref string) (map[string][]changedLineRange, int, 
 }
 
 // getChangedLinesForFile parses unified diff output to extract changed line ranges.
-func getChangedLinesForFile(repoRoot, ref, relFile string) ([]changedLineRange, error) {
-	cmd := exec.Command("git", "diff", ref+"...HEAD", "--", relFile)
+// sha must be a hex SHA (output of resolveGitRef) — never raw user input.
+func getChangedLinesForFile(repoRoot, sha, relFile string) ([]changedLineRange, error) {
+	cmd := exec.Command("git", "diff", sha+"...HEAD", "--", relFile)
 	cmd.Dir = repoRoot
 	out, err := cmd.Output()
 	if err != nil {
