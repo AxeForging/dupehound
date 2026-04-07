@@ -2,10 +2,12 @@ package domain
 
 // CloneInstance is a single occurrence of a duplicate code block.
 type CloneInstance struct {
-	File      string   `json:"file"`
-	StartLine int      `json:"start_line"`
-	EndLine   int      `json:"end_line"`
-	Lines     []string `json:"lines"`
+	File        string   `json:"file"`
+	StartLine   int      `json:"start_line"`
+	EndLine     int      `json:"end_line"`
+	Lines       []string `json:"lines"`
+	IsTest      bool     `json:"is_test,omitempty"`
+	FileCommits int      `json:"file_commits_in_window,omitempty"`
 }
 
 // Clone type constants.
@@ -17,12 +19,15 @@ const (
 
 // Clone represents a group of identical code blocks found in multiple locations.
 type Clone struct {
-	Hash       string          `json:"hash"`
-	Type       string          `json:"type"`
-	Similarity float64         `json:"similarity"`
-	LineCount  int             `json:"line_count"`
-	TokenCount int             `json:"token_count"`
-	Instances  []CloneInstance `json:"instances"`
+	Hash         string          `json:"hash"`
+	Type         string          `json:"type"`
+	Similarity   float64         `json:"similarity"`
+	LineCount    int             `json:"line_count"`
+	TokenCount   int             `json:"token_count"`
+	Instances    []CloneInstance `json:"instances"`
+	TestProdSpan bool            `json:"test_prod_span,omitempty"`
+	Suppressed   bool            `json:"suppressed,omitempty"`
+	ChurnScore   int             `json:"churn_score,omitempty"`
 }
 
 // FileStats holds per-file duplication metrics.
@@ -35,14 +40,28 @@ type FileStats struct {
 
 // Report is the full result of a dupehound scan.
 type Report struct {
-	TotalFiles     int         `json:"total_files"`
-	ScannedFiles   int         `json:"scanned_files"`
-	TotalClones    int         `json:"total_clones"`
-	TotalLines     int         `json:"total_lines"`
-	DuplicateLines int         `json:"duplicate_lines"`
-	DuplicationPct float64     `json:"duplication_pct"`
-	FileStats      []FileStats `json:"file_stats,omitempty"`
-	Clones         []Clone     `json:"clones"`
+	TotalFiles       int         `json:"total_files"`
+	ScannedFiles     int         `json:"scanned_files"`
+	SkippedFiles     int         `json:"skipped_files,omitempty"`
+	TotalClones      int         `json:"total_clones"`
+	TotalLines       int         `json:"total_lines"`
+	DuplicateLines   int         `json:"duplicate_lines"`
+	DuplicationPct   float64     `json:"duplication_pct"`
+	SuppressedClones int         `json:"suppressed_clones,omitempty"`
+	FileStats        []FileStats `json:"file_stats,omitempty"`
+	Clones           []Clone     `json:"clones"`
+	DeadFunctions    []DeadFunc  `json:"dead_functions,omitempty"`
+	NewClones        []Clone     `json:"new_clones,omitempty"`
+	SinceDiffRef     string      `json:"since_diff_ref,omitempty"`
+	SinceDiffFiles   int         `json:"since_diff_files,omitempty"`
+}
+
+// DeadFunc represents a function that appears to have no callers.
+type DeadFunc struct {
+	File     string `json:"file"`
+	Line     int    `json:"line"`
+	Name     string `json:"name"`
+	Language string `json:"language"`
 }
 
 // Config is the structure of a .dupehound.yml config file.
@@ -56,10 +75,12 @@ type ScanConfig struct {
 	Path      string   `yaml:"path"`
 	MinTokens int      `yaml:"min-tokens"`
 	Exclude   []string `yaml:"exclude"`
+	Include   []string `yaml:"include"`
 	Language  string   `yaml:"language"`
 	Format    string   `yaml:"format"`
 	Output    string   `yaml:"output"`
 	ExitZero  bool     `yaml:"exit-zero"`
+	Top       int      `yaml:"top"`
 }
 
 // Language defines a programming language and how to strip its comments.

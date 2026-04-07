@@ -57,7 +57,13 @@ func ApplyConfigDefaults(opts *ScanOptions, cfg domain.Config) {
 	if len(opts.Exclude) == 0 && len(cfg.Scan.Exclude) > 0 {
 		opts.Exclude = cfg.Scan.Exclude
 	}
+	if len(opts.Include) == 0 && len(cfg.Scan.Include) > 0 {
+		opts.Include = cfg.Scan.Include
+	}
 	if opts.Language == "" && cfg.Scan.Language != "" {
 		opts.Language = cfg.Scan.Language
+	}
+	if opts.Top == 0 && cfg.Scan.Top > 0 {
+		opts.Top = cfg.Scan.Top
 	}
 }

@@ -81,3 +81,41 @@ var configFlag = cli.StringFlag{
 	Value: "",
 	Usage: "Path to config file (default: auto-discover .dupehound.yml walking up from cwd)",
 }
+
+var includeFlag = cli.StringSliceFlag{
+	Name:  "include, i",
+	Usage: "Glob patterns to include (can be repeated; if set, only matching files are scanned; supports **)",
+}
+
+var topFlag = cli.IntFlag{
+	Name:  "top",
+	Value: 10,
+	Usage: "Max clones to show in text/md output (0 = show all)",
+}
+
+var sinceFlag = cli.StringFlag{
+	Name:  "since",
+	Value: "",
+	Usage: "Git ref for diff-aware scanning (e.g. main, HEAD~5, v1.0.0); only reports clones touching changed lines",
+}
+
+var showSuppressedFlag = cli.BoolFlag{
+	Name:  "show-suppressed",
+	Usage: "Include suppressed clones in output (tagged as [suppressed])",
+}
+
+var deadCodeFlag = cli.BoolFlag{
+	Name:  "dead-code",
+	Usage: "Detect likely-dead functions (functions with no external callers); heuristic only",
+}
+
+var gitChurnFlag = cli.BoolFlag{
+	Name:  "git-churn",
+	Usage: "Annotate clones with git commit churn scores and re-sort by churn",
+}
+
+var churnDaysFlag = cli.IntFlag{
+	Name:  "churn-days",
+	Value: 90,
+	Usage: "Rolling window in days for git churn counting (used with --git-churn)",
+}

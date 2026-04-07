@@ -1,5 +1,6 @@
 dist/
 coverage/
+coverage.out
 *.test
 /.cache
 /.tmp
