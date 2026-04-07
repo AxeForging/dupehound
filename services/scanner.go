@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"math"
 	"os"
 	"path/filepath"
@@ -9,18 +10,27 @@ import (
 
 	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
+	"github.com/gobwas/glob"
 )
 
 // ScanOptions configures a scan run.
 type ScanOptions struct {
-	Path          string
-	MinTokens     int
-	MinLines      int // deprecated; if MinTokens == 0, converted to MinTokens = MinLines * 10
-	Exclude       []string
-	Language      string
-	MinSimilarity float64 // minimum Jaccard similarity for type-3 detection (0.50–1.00)
-	MaxBucket     int     // max blocks per fuzzy bucket (0 = default 500)
-	Staged        bool    // only report clones involving git-staged files
+	Path           string
+	MinTokens      int
+	MinLines       int // deprecated; if MinTokens == 0, converted to MinTokens = MinLines * 10
+	Exclude        []string
+	Include        []string // if non-empty, only files matching at least one pattern are scanned
+	Language       string
+	MinSimilarity  float64 // minimum Jaccard similarity for type-3 detection (0.50–1.00)
+	MaxBucket      int     // max blocks per fuzzy bucket (0 = default 500)
+	Staged         bool    // only report clones involving git-staged files
+	Top            int     // max clones to show in text/md output (0 = all)
+	Since          string  // git ref for diff-aware scanning
+	ShowSuppressed bool    // include suppressed clones in output
+	DeadCode       bool    // enable dead function detection
+	GitChurn       bool    // annotate clones with git churn scores
+	ChurnDays      int     // number of days for git churn window (default 90)
+	IgnoreFile     string  // path to .dupehound-ignore file (auto-discovered if empty)
 }
 
 // ScannerService performs code duplication detection.
@@ -42,7 +52,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		minTokens = 50 // sensible default
 	}
 
-	files, err := collectFiles(opts.Path, opts.Exclude, opts.Language)
+	files, err := collectFiles(opts.Path, opts.Exclude, opts.Include, opts.Language)
 	if err != nil {
 		return nil, err
 	}
@@ -52,9 +62,13 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 
 	helpers.Log.Debug().Int("files", len(files)).Msg("collected files")
 
+	// Load suppression rules.
+	ignoreRules, _ := loadIgnoreFile(opts.IgnoreFile, opts.Path)
+
 	totalFiles := len(files)
 	var tokenizedFiles []TokenizedFile
 	scannedFiles := 0
+	skippedFiles := 0
 	fileLineCount := make(map[string]int) // path → total lines
 
 	for _, path := range files {
@@ -69,10 +83,17 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 			continue
 		}
 
+		// Binary file detection: check first 512 bytes for null byte.
+		if isBinaryData(data) {
+			helpers.Log.Debug().Str("file", path).Msg("skipping binary file")
+			skippedFiles++
+			continue
+		}
+
 		content := string(data)
 		fileLineCount[path] = countLines(content)
 
-		tf := BuildTokenizedFile(path, content, lang)
+		tf := BuildTokenizedFileWithIgnore(path, content, lang, ignoreRules)
 
 		// Skip files with too few tokens to form even one window.
 		if len(tf.Tokens) < minTokens {
@@ -97,6 +118,15 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	})
 	clones = deduplicateOverlapping(clones)
 
+	// Annotate test↔prod spans.
+	annotateTestProdSpan(clones)
+
+	// Apply suppression rules from .dupehound-ignore.
+	var suppressedCount int
+	if len(ignoreRules) > 0 {
+		clones, suppressedCount = applySuppressionRules(clones, ignoreRules, opts.ShowSuppressed)
+	}
+
 	// When --staged is active, filter to clones touching staged files.
 	if opts.Staged {
 		absPath, err := filepath.Abs(opts.Path)
@@ -120,6 +150,44 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		}
 	}
 
+	// Diff-aware scanning: filter to clones touching changed lines.
+	var newClones []domain.Clone
+	var sinceDiffFiles int
+	if opts.Since != "" {
+		absPath, err := filepath.Abs(opts.Path)
+		if err != nil {
+			absPath = opts.Path
+		}
+		changedLines, changedFiles, diffErr := getChangedLines(absPath, opts.Since)
+		if diffErr != nil {
+			helpers.Log.Warn().Err(diffErr).Str("ref", opts.Since).Msg("could not get git diff, falling back to full scan")
+		} else {
+			sinceDiffFiles = changedFiles
+			newClones = filterClonesInDiff(clones, changedLines)
+		}
+	}
+
+	// Git churn annotation.
+	if opts.GitChurn {
+		absPath, err := filepath.Abs(opts.Path)
+		if err != nil {
+			absPath = opts.Path
+		}
+		churnDays := opts.ChurnDays
+		if churnDays <= 0 {
+			churnDays = 90
+		}
+		annotateGitChurn(clones, absPath, churnDays)
+		// Re-sort by churn score.
+		sortByChurn(clones)
+	}
+
+	// Dead code detection.
+	var deadFuncs []domain.DeadFunc
+	if opts.DeadCode {
+		deadFuncs = findDeadFunctions(tokenizedFiles)
+	}
+
 	duplicateLines := countDuplicateLines(clones)
 
 	totalLines := 0
@@ -134,20 +202,53 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 
 	fileStats := buildFileStats(clones, fileLineCount)
 
-	return &domain.Report{
-		TotalFiles:     totalFiles,
-		ScannedFiles:   scannedFiles,
-		TotalClones:    len(clones),
-		TotalLines:     totalLines,
-		DuplicateLines: duplicateLines,
-		DuplicationPct: duplicationPct,
-		FileStats:      fileStats,
-		Clones:         clones,
-	}, nil
+	report := &domain.Report{
+		TotalFiles:       totalFiles,
+		ScannedFiles:     scannedFiles,
+		SkippedFiles:     skippedFiles,
+		TotalClones:      len(clones),
+		TotalLines:       totalLines,
+		DuplicateLines:   duplicateLines,
+		DuplicationPct:   duplicationPct,
+		SuppressedClones: suppressedCount,
+		FileStats:        fileStats,
+		Clones:           filterSuppressed(clones, opts.ShowSuppressed),
+		DeadFunctions:    deadFuncs,
+	}
+	if opts.Since != "" && sinceDiffFiles >= 0 {
+		report.SinceDiffRef = opts.Since
+		report.SinceDiffFiles = sinceDiffFiles
+		report.NewClones = filterSuppressed(newClones, false)
+	}
+
+	return report, nil
 }
 
-// collectFiles walks path and returns files matching the language filter and not excluded.
-func collectFiles(root string, exclude []string, langFilter string) ([]string, error) {
+// filterSuppressed returns only non-suppressed clones (or all if includeSuppressed).
+func filterSuppressed(clones []domain.Clone, includeSuppressed bool) []domain.Clone {
+	if includeSuppressed {
+		return clones
+	}
+	result := make([]domain.Clone, 0, len(clones))
+	for _, c := range clones {
+		if !c.Suppressed {
+			result = append(result, c)
+		}
+	}
+	return result
+}
+
+// isBinaryData returns true if the given data slice contains a null byte in the first 512 bytes.
+func isBinaryData(data []byte) bool {
+	checkLen := 512
+	if len(data) < checkLen {
+		checkLen = len(data)
+	}
+	return bytes.IndexByte(data[:checkLen], 0) >= 0
+}
+
+// collectFiles walks path and returns files matching the language filter, include patterns, and not excluded.
+func collectFiles(root string, exclude []string, include []string, langFilter string) ([]string, error) {
 	info, err := os.Stat(root)
 	if err != nil {
 		return nil, helpers.ErrPathNotFound
@@ -158,6 +259,9 @@ func collectFiles(root string, exclude []string, langFilter string) ([]string, e
 	if !info.IsDir() {
 		if matchesExcludes(root, exclude) {
 			return nil, nil
+		}
+		if !matchesIncludes(root, include) {
+			return nil, helpers.ErrNoFilesFound
 		}
 		lang := DetectLanguage(root)
 		if lang == nil {
@@ -180,6 +284,9 @@ func collectFiles(root string, exclude []string, langFilter string) ([]string, e
 			return nil
 		}
 		if matchesExcludes(path, exclude) {
+			return nil
+		}
+		if !matchesIncludes(path, include) {
 			return nil
 		}
 		lang := DetectLanguage(path)
@@ -208,14 +315,53 @@ func isHiddenOrVendored(name string) bool {
 	return skip[name]
 }
 
-// matchesExcludes returns true if path matches any exclude glob.
-func matchesExcludes(path string, exclude []string) bool {
-	base := filepath.Base(path)
-	for _, pattern := range exclude {
-		if ok, _ := filepath.Match(pattern, base); ok {
+// matchGlob matches path against a glob pattern using gobwas/glob for ** support.
+// Falls back to filepath.Match when the pattern contains no **.
+func matchGlob(pattern, path string) bool {
+	// Try full path first.
+	if strings.Contains(pattern, "**") {
+		g, err := glob.Compile(pattern, '/')
+		if err == nil && g.Match(path) {
 			return true
 		}
-		if ok, _ := filepath.Match(pattern, path); ok {
+		// Also try with just the base name for patterns like "**/*.go".
+		g2, err2 := glob.Compile(pattern, '/')
+		if err2 == nil && g2.Match(filepath.Base(path)) {
+			return true
+		}
+		return false
+	}
+	// No **, use stdlib filepath.Match on both base and full path.
+	base := filepath.Base(path)
+	if ok, _ := filepath.Match(pattern, base); ok {
+		return true
+	}
+	if ok, _ := filepath.Match(pattern, path); ok {
+		return true
+	}
+	return false
+}
+
+// matchesExcludes returns true if path matches any exclude glob (supports **).
+func matchesExcludes(path string, exclude []string) bool {
+	// Normalize to forward slashes for glob matching.
+	normPath := filepath.ToSlash(path)
+	for _, pattern := range exclude {
+		if matchGlob(pattern, normPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesIncludes returns true if include is empty or path matches at least one include pattern.
+func matchesIncludes(path string, include []string) bool {
+	if len(include) == 0 {
+		return true
+	}
+	normPath := filepath.ToSlash(path)
+	for _, pattern := range include {
+		if matchGlob(pattern, normPath) {
 			return true
 		}
 	}

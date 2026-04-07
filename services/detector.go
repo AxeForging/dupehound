@@ -16,9 +16,10 @@ import (
 // RawLines are not stored here to reduce memory; preview lines are
 // loaded lazily from disk only for files that end up in detected clones.
 type TokenizedFile struct {
-	Path   string
-	Tokens []Token // normalized token sequence (no newlines)
-	InFunc []bool  // per-token: true if inside a function/method body
+	Path    string
+	Tokens  []Token // normalized token sequence (no newlines)
+	InFunc  []bool  // per-token: true if inside a function/method body
+	Ignored []bool  // per-token: true if in a dupehound:ignore annotated block
 }
 
 // BuildTokenizedFile tokenizes a source file and returns a TokenizedFile.
@@ -28,6 +29,26 @@ func BuildTokenizedFile(path, content string, lang *domain.Language) TokenizedFi
 		Path:   path,
 		Tokens: tokens,
 		InFunc: markFunctionBodies(tokens, lang),
+	}
+}
+
+// BuildTokenizedFileWithIgnore tokenizes a source file, applying inline suppression
+// markers from both the source (dupehound:ignore comments) and the ignore rules.
+func BuildTokenizedFileWithIgnore(path, content string, lang *domain.Language, rules []IgnoreRule) TokenizedFile {
+	tokens := TokenizeFileWithIgnore(content, lang)
+	inFunc := markFunctionBodies(tokens, lang)
+	ignored := markIgnoredBlocks(tokens, inFunc)
+	// Zero out InFunc for ignored tokens so detection skips them.
+	for i, ign := range ignored {
+		if ign {
+			inFunc[i] = false
+		}
+	}
+	return TokenizedFile{
+		Path:    path,
+		Tokens:  tokens,
+		InFunc:  inFunc,
+		Ignored: ignored,
 	}
 }
 
