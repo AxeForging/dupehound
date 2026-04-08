@@ -4,13 +4,15 @@
 # sample app — frontend in React/TS, backend in Fastify/TS). 69 source files,
 # ~14k lines, organic duplication patterns, real dead-function candidates.
 #
-# Regenerate the GIF after a code change:
+# Regenerate the GIF after a code change (single command — the clone is
+# inlined and idempotent):
 #
-#   bash docs/demo/setup.sh
 #   python3 ~/Documents/workspace/axeforge/git/scripts/cast/cast.py docs/demo/cast.yaml
 #
+# Prereqs: dupehound on PATH, plus the cast recorder (asciinema, agg, yoink).
+#
 # Output:    docs/demo/dupehound-demo.gif (committed)
-# Cleanup:   docs/demo/cast.cast and docs/demo/.bin are gitignored
+# Cleanup:   docs/demo/dupehound-demo.cast (gitignored)
 output: docs/demo/dupehound-demo.gif
 
 recording:
@@ -32,7 +34,12 @@ defaults:
   pause: 1.4
 
 scenes:
-  # ---------- Setup: jump into the demo repo ----------
+  # ---------- Setup (off-camera): clone the demo repo if missing ----------
+  # Idempotent: subsequent runs short-circuit on `test -d`. Uses /tmp so the
+  # demo never touches the dupehound source tree.
+  - bash: "test -d /tmp/dupehound-demo-repo || git clone --depth 1 --quiet https://github.com/axeforging/tacomex-8bit-shop.git /tmp/dupehound-demo-repo"
+    pause: 0.2
+
   - bash: "cd /tmp/dupehound-demo-repo && clear"
     pause: 0.6
 
