@@ -68,6 +68,96 @@ func main() {
 	}
 }
 
+// TestDeadCode_TestOnlyHelperNotFlagged is the regression test for the false
+// positive that dupehound flagged on its OWN PR #24: a function defined in
+// production code, called only from a _test.go file, must NOT be reported as
+// dead — even when the user excluded test files via --exclude. The fix is
+// that the scanner builds a usage-only background tokenized set from a
+// no-exclude collection pass, so excluded files still contribute to the
+// identifier-usage map even though they don't appear in clone reports.
+func TestDeadCode_TestOnlyHelperNotFlagged(t *testing.T) {
+	dir := t.TempDir()
+	// Production file: defines testOnlyHelper. No production caller.
+	writeTestFile(t, dir, "lib.go", `package main
+func testOnlyHelper(x int) int {
+	return x * 2
+}
+func main() {
+	_ = 0
+}
+`)
+	// Test file: calls testOnlyHelper. Excluded from the scan via --exclude.
+	writeTestFile(t, dir, "lib_test.go", `package main
+func TestSomething() {
+	got := testOnlyHelper(21)
+	_ = got
+}
+`)
+
+	svc := NewScannerService()
+	report, err := svc.Scan(ScanOptions{
+		Path:      dir,
+		MinTokens: 5,
+		DeadCode:  true,
+		Exclude:   []string{"*_test.go"}, // the configuration that triggered the bug on PR #24
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// testOnlyHelper has a real caller (in the excluded test file). The
+	// pre-fix code would report it as dead because the test file wasn't in
+	// the tokenized set. After the fix, the usage background pass picks it
+	// up and the function is correctly NOT flagged.
+	for _, df := range report.DeadFunctions {
+		if df.Name == "testOnlyHelper" {
+			t.Errorf("testOnlyHelper has a caller in the excluded test file and must NOT be reported as dead; got: %+v", report.DeadFunctions)
+		}
+	}
+}
+
+// TestDeadCode_GenuinelyDeadStillFlaggedWithExcludes is the matching positive
+// barrier: the broader usage scan must NOT cause genuinely-dead functions to
+// be missed. A function with no callers anywhere — including tests — should
+// still be flagged even when excludes are active.
+func TestDeadCode_GenuinelyDeadStillFlaggedWithExcludes(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "lib.go", `package main
+func reallyDead(x int) int {
+	return x + 1
+}
+func main() {
+	_ = 0
+}
+`)
+	writeTestFile(t, dir, "lib_test.go", `package main
+func TestSomethingElse() {
+	_ = 0
+}
+`)
+
+	svc := NewScannerService()
+	report, err := svc.Scan(ScanOptions{
+		Path:      dir,
+		MinTokens: 5,
+		DeadCode:  true,
+		Exclude:   []string{"*_test.go"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, df := range report.DeadFunctions {
+		if df.Name == "reallyDead" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("reallyDead has zero callers anywhere and must still be flagged with excludes active; got: %+v", report.DeadFunctions)
+	}
+}
+
 // TestDeadCode_AbsentFlag verifies that --dead-code absent means no dead function output.
 func TestDeadCode_AbsentFlag(t *testing.T) {
 	dir := t.TempDir()

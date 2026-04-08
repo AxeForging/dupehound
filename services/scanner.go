@@ -252,9 +252,26 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	}
 
 	// Dead code detection.
+	//
+	// The heuristic needs a *broader* file set than the in-scope tokenized
+	// files to avoid false positives: if the user excluded test files via
+	// --exclude or .dupehound.yml, a function called only from a test would
+	// otherwise be reported as dead. Re-collect with no excludes (and with
+	// --include disabled) to build a usage-only background set.
 	var deadFuncs []domain.DeadFunc
 	if opts.DeadCode {
-		deadFuncs = findDeadFunctions(tokenizedFiles)
+		usageFiles := tokenizedFiles
+		if len(opts.Exclude) > 0 || len(opts.Include) > 0 {
+			extraTokenized := buildUsageBackground(opts.Path, opts.Language, ignoreRules, tokenizedFiles)
+			if len(extraTokenized) > 0 {
+				usageFiles = append(append([]TokenizedFile{}, tokenizedFiles...), extraTokenized...)
+				helpers.Log.Debug().
+					Int("in_scope", len(tokenizedFiles)).
+					Int("background", len(extraTokenized)).
+					Msg("dead-code: tokenized extra files for usage background")
+			}
+		}
+		deadFuncs = findDeadFunctions(tokenizedFiles, usageFiles)
 	}
 
 	duplicateLines := countDuplicateLines(clones)
@@ -291,6 +308,43 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	}
 
 	return report, nil
+}
+
+// buildUsageBackground walks the scan path with no exclude/include filters
+// and tokenizes any source files that aren't already in the in-scope set.
+// The returned slice is meant to be appended to the in-scope tokenized files
+// before passing to findDeadFunctions, so that excluded test files (and any
+// other excluded code) still contribute their identifier-usage information
+// to the dead-code analysis. Binary files are skipped, just like the main
+// collection path.
+func buildUsageBackground(scanPath, language string, ignoreRules []IgnoreRule, inScope []TokenizedFile) []TokenizedFile {
+	allFiles, err := collectFiles(scanPath, nil, nil, language)
+	if err != nil || len(allFiles) == 0 {
+		return nil
+	}
+	have := make(map[string]bool, len(inScope))
+	for _, tf := range inScope {
+		have[tf.Path] = true
+	}
+	var extra []TokenizedFile
+	for _, path := range allFiles {
+		if have[path] {
+			continue
+		}
+		lang := DetectLanguage(path)
+		if lang == nil {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		if isBinaryData(data) {
+			continue
+		}
+		extra = append(extra, BuildTokenizedFileWithIgnore(path, string(data), lang, ignoreRules))
+	}
+	return extra
 }
 
 // filterSuppressed returns only non-suppressed clones (or all if includeSuppressed).

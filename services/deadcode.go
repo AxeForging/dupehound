@@ -16,13 +16,25 @@ type FunctionDef struct {
 	DefTok int // token index of the function name
 }
 
-// findDeadFunctions analyses all tokenized files and returns functions whose
+// findDeadFunctions analyses tokenized files and returns functions whose
 // names do not appear in any token outside their own definition line.
-// This is a heuristic — cross-package calls and reflection produce false positives.
-func findDeadFunctions(files []TokenizedFile) []domain.DeadFunc {
-	// Phase 1: extract all function definitions.
+//
+// defFiles is the set the user wants findings reported for (typically the
+// in-scope set after --include / --exclude). usageFiles is the broader set
+// used only to build the identifier-usage map — usually a superset of
+// defFiles that includes test files even when the user excluded them from
+// clone reporting. Passing the same slice for both is the simple "scan
+// everything" mode and matches the original single-arg behavior.
+//
+// This is a heuristic — cross-package calls and reflection produce false
+// positives. Splitting defs from usages eliminates the test-only-helper
+// false positive: a function defined in production code but called only
+// from a test file is no longer reported as dead, as long as the test file
+// is in the usageFiles set.
+func findDeadFunctions(defFiles, usageFiles []TokenizedFile) []domain.DeadFunc {
+	// Phase 1: extract all function definitions from the in-scope set only.
 	var defs []FunctionDef
-	for _, tf := range files {
+	for _, tf := range defFiles {
 		lang := DetectLanguage(tf.Path)
 		if lang == nil {
 			continue
@@ -35,14 +47,16 @@ func findDeadFunctions(files []TokenizedFile) []domain.DeadFunc {
 		return nil
 	}
 
-	// Phase 2: build a set of all identifier tokens across all files.
-	// Map: name → set of lines where it appears (file+line pairs).
+	// Phase 2: build a set of all identifier tokens across the broader
+	// usage set. This is what fixes the false positive — a test-only helper
+	// will appear here even if its defining file is excluded from clone
+	// reporting.
 	type fileLineKey struct {
 		file string
 		line int
 	}
 	nameUsages := make(map[string]map[fileLineKey]bool)
-	for _, tf := range files {
+	for _, tf := range usageFiles {
 		for _, tok := range tf.Tokens {
 			if tok.Kind != TokIdent || tok.OrigText == "" {
 				continue
