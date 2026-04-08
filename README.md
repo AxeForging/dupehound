@@ -4,6 +4,10 @@ Detect code duplication across multiple languages. Single binary, no runtime dep
 
 Finds type-1 (identical), type-2 (renamed identifiers), and type-3 (near-miss) clones using token-based detection with function-level granularity — skips imports, declarations, and config blocks to focus on actual logic duplication.
 
+![dupehound finding duplicates and dead code in tacomex-8bit-shop](docs/demo/dupehound-demo.gif)
+
+> dupehound run against [`axeforging/tacomex-8bit-shop`](https://github.com/axeforging/tacomex-8bit-shop) — a real React + Fastify sample app. See [EXAMPLES.md](EXAMPLES.md) for the full cookbook.
+
 ## Contents
 
 - [Supported languages](#supported-languages)

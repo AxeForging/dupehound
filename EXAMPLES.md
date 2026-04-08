@@ -1,5 +1,9 @@
 # dupehound — Examples & Use Cases
 
+![dupehound demo: scanning a real React/Fastify app for duplicates and dead code](docs/demo/dupehound-demo.gif)
+
+> Demo: dupehound run against [`axeforging/tacomex-8bit-shop`](https://github.com/axeforging/tacomex-8bit-shop) — a real React + Fastify sample app, 69 source files, ~14k LOC. Finds 163 clones and 19 dead-function candidates in seconds. Regenerate with `bash docs/demo/setup.sh && python3 path/to/cast.py docs/demo/cast.yaml`.
+
 Practical, copy-pasteable recipes for the things dupehound is good at. Each section is collapsed by default — open the ones you need.
 
 > Quick links: [Pre-commit](#pre-commit-hook) · [CI / PR comments](#ci-on-pull-requests) · [Diff-aware](#diff-aware-scanning) · [Filtering](#filtering-files) · [Suppression](#suppressing-known-duplicates) · [Test↔Prod](#testprod-leak-detection) · [Git churn](#git-churn-ranking) · [Dead code](#dead-function-detection) · [Safe-mode for big repos](#safe-mode-profiles-for-large-repos) · [Hook output for AI](#hook-output-and-ai-readability) · [Output formats](#output-formats) · [Real-world trial](#real-world-trial-clicli)
