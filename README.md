@@ -4,6 +4,25 @@ Detect code duplication across multiple languages. Single binary, no runtime dep
 
 Finds type-1 (identical), type-2 (renamed identifiers), and type-3 (near-miss) clones using token-based detection with function-level granularity — skips imports, declarations, and config blocks to focus on actual logic duplication.
 
+![dupehound finding duplicates and dead code in tacomex-8bit-shop](docs/demo/dupehound-demo.gif)
+
+> dupehound run against [`axeforging/tacomex-8bit-shop`](https://github.com/axeforging/tacomex-8bit-shop) — a real React + Fastify sample app. See [EXAMPLES.md](EXAMPLES.md) for the full cookbook.
+
+## Contents
+
+- [Supported languages](#supported-languages)
+- [Install](#install)
+- [Usage](#usage)
+- [Quick examples](#quick-examples) — basic recipes
+- [More examples & use cases](#more-examples--use-cases) → **[EXAMPLES.md](EXAMPLES.md)** for the full cookbook
+- [Quality gate](#quality-gate)
+- [Pre-commit hook](#pre-commit-hook)
+- [Configuration](#configuration)
+- [Clone types](#clone-types)
+- [How it works](#how-it-works)
+- [Output formats](#output-formats)
+- [Exit codes](#exit-codes)
+
 ## Supported languages
 
 Go, Python, JavaScript, TypeScript, Java, Kotlin, Rust, C, C++, C#, Swift, Scala, PHP, Ruby, Shell, SQL, Lua, Elixir, Dart, R
@@ -33,18 +52,31 @@ Options:
   --min-tokens, -t     Minimum tokens to consider a duplicate block [default: 50, ~5 lines]
   --format, -f         Output format: text, json, sarif, md [default: text]
   --output, -o         Output file (default: stdout)
-  --exclude, -e        Glob patterns to exclude (repeatable)
+  --include, -i        Glob patterns to include (repeatable, supports **)
+  --exclude, -e        Glob patterns to exclude (repeatable, supports **)
   --language, -L       Filter by language (e.g. go, python, javascript)
   --similarity         Minimum similarity for type-3 detection (0.50–1.00; 1.0 disables) [default: 0.7]
   --max-bucket         Max candidates per fuzzy hash bucket [default: 5000]
   --min-duplication    Fail if global duplication % exceeds this value (0 = disabled) [default: 0]
   --staged             Only report clones involving git-staged files (for pre-commit hooks)
+  --since              Git ref for diff-aware scanning (e.g. main, HEAD~5, v1.0.0).
+                       The detector itself skips work for clones outside the diff —
+                       this is a true cost reduction, not just a post-filter.
+  --top                Max clones to show in text/md output (0 = show all) [default: 10]
+  --git-churn          Annotate clones with git commit churn and re-sort by churn
+  --churn-days         Rolling window in days for git churn (default 90)
+  --dead-code          Detect likely-dead functions (heuristic only)
+  --show-suppressed    Include suppressed clones in output (tagged [suppressed])
+  --max-files          Hard cap on collected source files (0 = no cap); fail-fast safety net
+  --max-pairs          Hard cap on fuzzy candidate pairs (0 = no cap); fail-fast safety net
   --exit-zero          Always exit 0 even when clones are found
   --config, -c         Path to config file (default: auto-discover .dupehound.yml)
   --verbose, -v        Enable verbose logging
+  --quiet, -q          Suppress info-level progress logs (the clone report on stdout
+                       is unaffected, so failing hooks still show the failure reason)
 ```
 
-## Examples
+## Quick examples
 
 Scan current directory:
 
@@ -79,7 +111,7 @@ dupehound scan --format sarif --output results.sarif
 Exclude generated files:
 
 ```sh
-dupehound scan --exclude "*.pb.go" --exclude "*.gen.go"
+dupehound scan --exclude "**/*.pb.go" --exclude "**/*.gen.go"
 ```
 
 Scan only Python files:
@@ -87,6 +119,25 @@ Scan only Python files:
 ```sh
 dupehound scan --language python
 ```
+
+## More examples & use cases
+
+The recipes above cover the basics. For a full cookbook with copy-pasteable patterns for pre-commit hooks, PR comments, diff-aware CI, suppression rules, churn ranking, dead-code detection, and safe-mode profiles for large monorepos, see **[EXAMPLES.md](EXAMPLES.md)**.
+
+Jump straight to a topic:
+
+- [Pre-commit hook (lefthook + plain git)](EXAMPLES.md#pre-commit-hook)
+- [CI on pull requests (GitHub Actions + sticky comments)](EXAMPLES.md#ci-on-pull-requests)
+- [Diff-aware scanning with `--since`](EXAMPLES.md#diff-aware-scanning)
+- [Filtering files with `--include` / `--exclude`](EXAMPLES.md#filtering-files)
+- [Suppressing known duplicates (`.dupehound-ignore` + inline markers)](EXAMPLES.md#suppressing-known-duplicates)
+- [Test↔Prod leak detection](EXAMPLES.md#testprod-leak-detection)
+- [Git churn ranking (`--git-churn`)](EXAMPLES.md#git-churn-ranking)
+- [Dead function detection (`--dead-code`)](EXAMPLES.md#dead-function-detection)
+- [Safe-mode profiles for large repos (`--max-files`, `--max-pairs`, `--similarity 1.0`)](EXAMPLES.md#safe-mode-profiles-for-large-repos)
+- [Hook output and AI readability (`--quiet`)](EXAMPLES.md#hook-output-and-ai-readability)
+- [Output formats (text, md, json, sarif)](EXAMPLES.md#output-formats)
+- [Real-world trial on `cli/cli`](EXAMPLES.md#real-world-trial-clicli)
 
 ## Quality gate
 

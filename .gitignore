@@ -1,8 +1,13 @@
 dist/
 coverage/
+coverage.out
 *.test
 /.cache
 /.tmp
 .claude/
 dupehound
 lefthook-local.yml
+
+# cast demo intermediates — only the final .gif is committed
+docs/demo/*.cast
+docs/demo/.bin/

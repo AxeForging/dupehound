@@ -1,0 +1,83 @@
+# Hero demo: dupehound finding duplicates and dead code in a real React/TS app.
+#
+# Demo target: github.com/axeforging/tacomex-8bit-shop (a small e-commerce
+# sample app — frontend in React/TS, backend in Fastify/TS). 69 source files,
+# ~14k lines, organic duplication patterns, real dead-function candidates.
+#
+# Regenerate the GIF after a code change (single command — the clone is
+# inlined and idempotent):
+#
+#   python3 ~/Documents/workspace/axeforge/git/scripts/cast/cast.py docs/demo/cast.yaml
+#
+# Prereqs: dupehound on PATH, plus the cast recorder (asciinema, agg, yoink).
+#
+# Output:    docs/demo/dupehound-demo.gif (committed)
+# Cleanup:   docs/demo/dupehound-demo.cast (gitignored)
+output: docs/demo/dupehound-demo.gif
+
+recording:
+  cols: 110
+  rows: 32
+  idle_time_limit: 3
+  title: "dupehound — find duplicates and dead code in seconds"
+
+render:
+  theme: dracula
+  font: "JetBrains Mono"
+  font_size: 16
+  line_height: 1.4
+  speed: 1.3
+  idle_time_limit: 2
+
+defaults:
+  type_delay: 50
+  pause: 1.4
+
+scenes:
+  # ---------- Setup (off-camera): clone the demo repo if missing ----------
+  # Idempotent: subsequent runs short-circuit on `test -d`. Uses /tmp so the
+  # demo never touches the dupehound source tree.
+  - bash: "test -d /tmp/dupehound-demo-repo || git clone --depth 1 --quiet https://github.com/axeforging/tacomex-8bit-shop.git /tmp/dupehound-demo-repo"
+    pause: 0.2
+
+  - bash: "cd /tmp/dupehound-demo-repo && clear"
+    pause: 0.6
+
+  - comment: "tacomex-8bit-shop — a real React + Fastify sample app"
+    pause: 0.8
+
+  - type: "find . -type f \\( -name '*.ts' -o -name '*.tsx' \\) | wc -l"
+    pause: 1.2
+
+  # ---------- Act 1: scan for duplicates ----------
+  - comment: "scan it for duplicates — top 3 by impact"
+    pause: 0.6
+
+  - type: "dupehound scan --top 3 --quiet --exit-zero"
+    pause: 4.0
+
+  - comment: "20% duplication. one block repeated 11 times in seeds/index.ts."
+    pause: 2.5
+
+  - clear: true
+    pause: 0.4
+
+  # ---------- Act 2: dead-code detection ----------
+  - comment: "now find functions with no callers — likely dead code"
+    pause: 0.8
+
+  - type: "dupehound scan --dead-code --top 5 --quiet --exit-zero 2>&1 | tail -25"
+    pause: 4.0
+
+  - comment: "real findings — closeConnection, optionalAuth, requireAdmin..."
+    pause: 2.5
+
+  - clear: true
+    pause: 0.4
+
+  # ---------- Outro ----------
+  - comment: "dupehound — single binary, 20 languages, no runtime deps"
+    pause: 1.5
+
+  - type: "dupehound scan --help | head -3"
+    pause: 2.0

@@ -7,6 +7,7 @@ dir_structure:
     - "helpers/**"
     - "integration/**"
     - ".github/**"
+    - "docs/**"
   disallowedPaths:
     - "vendor/**"
     - "node_modules/**"
@@ -32,6 +33,7 @@ file_naming_pattern:
     - ".goreleaser.yml"
     - ".github/**"
     - "*.txt"
+    - "*.gif"
   disallowed:
     - "*.env*"
     - ".env*"
@@ -52,3 +54,6 @@ ignore:
   - "node_modules"
   - "dist"
   - "dupehound"
+  - "coverage.out"
+  - "docs/demo/*.cast"
+  - "docs/demo/.bin"

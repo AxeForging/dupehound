@@ -22,8 +22,12 @@ func NewScanAction(svc *services.ScannerService) *ScanAction {
 
 // Execute runs the scan command.
 func (a *ScanAction) Execute(c *cli.Context) error {
-	if c.Bool("verbose") {
+	// Log level: --verbose wins over --quiet (you asked for both, you get debug).
+	switch {
+	case c.Bool("verbose"):
 		helpers.SetupLogger("debug")
+	case c.Bool("quiet"):
+		helpers.SetupLogger("warn")
 	}
 
 	// Load config file: explicit --config flag, then auto-discover from cwd.
@@ -64,6 +68,30 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		opts.MaxBucket = c.Int("max-bucket")
 	}
 	opts.Staged = c.Bool("staged")
+	if c.IsSet("include") {
+		opts.Include = c.StringSlice("include")
+	}
+	if c.IsSet("top") {
+		topVal := c.Int("top")
+		if topVal == 0 {
+			opts.Top = -1 // 0 means all in CLI, -1 means all in opts
+		} else {
+			opts.Top = topVal
+		}
+	}
+	opts.Since = c.String("since")
+	opts.ShowSuppressed = c.Bool("show-suppressed")
+	opts.DeadCode = c.Bool("dead-code")
+	opts.GitChurn = c.Bool("git-churn")
+	if c.IsSet("churn-days") {
+		opts.ChurnDays = c.Int("churn-days")
+	}
+	if c.IsSet("max-files") {
+		opts.MaxFiles = c.Int("max-files")
+	}
+	if c.IsSet("max-pairs") {
+		opts.MaxPairs = c.Int("max-pairs")
+	}
 
 	services.ApplyConfigDefaults(&opts, cfg)
 
@@ -120,9 +148,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if err != nil {
 		absPath = opts.Path
 	}
+	topVal := c.Int("top")
+	if c.IsSet("top") && topVal == 0 {
+		topVal = -1 // --top 0 means show all
+	}
 	output, err := services.FormatReport(report, format, services.FormatOptions{
-		ScanPath: absPath,
-		Verbose:  c.Bool("verbose"),
+		ScanPath:       absPath,
+		Verbose:        c.Bool("verbose"),
+		Top:            topVal,
+		ShowSuppressed: c.Bool("show-suppressed"),
 	})
 	if err != nil {
 		return fmt.Errorf("format report: %w", err)
@@ -138,12 +172,30 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	}
 
 	minDuplication := c.Float64("min-duplication")
-	if minDuplication > 0 && report.DuplicationPct > minDuplication {
-		return helpers.ErrThresholdExceeded
+	if minDuplication > 0 {
+		// When --since is active, apply threshold only to new clones.
+		dupPct := report.DuplicationPct
+		if opts.Since != "" && len(report.NewClones) == 0 {
+			dupPct = 0
+		}
+		if dupPct > minDuplication {
+			return helpers.ErrThresholdExceeded
+		}
 	}
 
-	if report.TotalClones > 0 && !exitZero {
+	// When --since is active, exit 1 only if new clones found.
+	if opts.Since != "" {
+		if len(report.NewClones) > 0 && !exitZero {
+			return helpers.ErrClonesFound
+		}
+	} else if report.TotalClones > 0 && !exitZero {
 		return helpers.ErrClonesFound
 	}
+
+	// Exit 1 if dead functions found.
+	if len(report.DeadFunctions) > 0 && !exitZero {
+		return helpers.ErrClonesFound
+	}
+
 	return nil
 }

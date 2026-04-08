@@ -1085,3 +1085,85 @@ func TestType3_JSONOutput_HasType3(t *testing.T) {
 		t.Error("expected JSON output with type-3 clone and fractional similarity")
 	}
 }
+
+// TestQuiet_SuppressesInfoLogsButKeepsReport is the end-to-end test for
+// --quiet. The contract: info-level progress logs (stderr) are silenced,
+// BUT the actual scan report (stdout) and any warnings/errors (stderr)
+// remain. This is what makes --quiet safe for hooks: a failing hook still
+// prints the clone listing so the dev (or an LLM watching the hook output)
+// can see exactly what's wrong and where.
+func TestQuiet_SuppressesInfoLogsButKeepsReport(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	block := "func helper() {\n\tx := compute()\n\tprocess(x)\n\tlog(x)\n\tstore(x)\n\treturn x\n}\n"
+	writeFile(t, dir, "a.go", "package main\n\n"+block)
+	writeFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// Baseline: no --quiet → "starting scan" / "scan complete" info logs
+	// land on stderr.
+	cmdBaseline := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero")
+	var baselineStderr strings.Builder
+	cmdBaseline.Stderr = &baselineStderr
+	baselineStdout, err := cmdBaseline.Output()
+	if err != nil {
+		t.Fatalf("baseline scan failed: %v\nstderr: %s", err, baselineStderr.String())
+	}
+	if !strings.Contains(baselineStderr.String(), "starting scan") {
+		t.Fatalf("baseline: expected 'starting scan' info log on stderr, got: %s", baselineStderr.String())
+	}
+
+	// --quiet: no info logs on stderr.
+	cmdQuiet := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--quiet")
+	var quietStderr strings.Builder
+	cmdQuiet.Stderr = &quietStderr
+	quietStdout, err := cmdQuiet.Output()
+	if err != nil {
+		t.Fatalf("quiet scan failed: %v\nstderr: %s", err, quietStderr.String())
+	}
+	if strings.Contains(quietStderr.String(), "starting scan") || strings.Contains(quietStderr.String(), "scan complete") {
+		t.Errorf("--quiet should suppress info logs, but stderr was: %s", quietStderr.String())
+	}
+
+	// Critical: stdout (the actual report) must be unchanged. This is what
+	// makes --quiet safe for hooks — the failure REASON is still visible.
+	if !strings.Contains(string(quietStdout), "Clones found") {
+		t.Errorf("--quiet must NOT suppress the scan report on stdout, got: %s", string(quietStdout))
+	}
+	if !strings.Contains(string(quietStdout), "Top clones") {
+		t.Errorf("--quiet must NOT suppress the clone listing on stdout, got: %s", string(quietStdout))
+	}
+
+	// And the report must contain the same essential lines between
+	// baseline and quiet modes. Compare line counts (a soft equivalence
+	// check) — we don't compare byte-identically because tie-broken sort
+	// orders can shuffle hotspot rows between runs (separate, real bug
+	// tracked elsewhere; out of scope for the --quiet contract test).
+	baseLines := strings.Count(string(baselineStdout), "\n")
+	quietLines := strings.Count(string(quietStdout), "\n")
+	if baseLines != quietLines {
+		t.Errorf("--quiet changed stdout line count: baseline=%d quiet=%d\nbaseline:\n%s\nquiet:\n%s",
+			baseLines, quietLines, string(baselineStdout), string(quietStdout))
+	}
+}
+
+// TestQuiet_VerboseWinsOverQuiet is the precedence regression test: if a
+// user passes both --verbose and --quiet, --verbose wins. This is the
+// documented behavior in the action and the only sensible default since
+// "more output" is the more conservative choice when intent is ambiguous.
+func TestQuiet_VerboseWinsOverQuiet(t *testing.T) {
+	bin := buildBinary(t)
+	dir := t.TempDir()
+	writeFile(t, dir, "a.go", "package main\n\nfunc f() int { return 1 }\n")
+
+	cmd := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--verbose", "--quiet")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if _, err := cmd.Output(); err != nil {
+		t.Fatalf("scan failed: %v\nstderr: %s", err, stderr.String())
+	}
+	// At minimum the "starting scan" info-or-debug log must be present
+	// (verbose level → DEBUG, which includes INFO).
+	if !strings.Contains(stderr.String(), "starting scan") {
+		t.Errorf("--verbose should override --quiet, expected 'starting scan' log, got: %s", stderr.String())
+	}
+}

@@ -37,6 +37,11 @@ var verboseFlag = cli.BoolFlag{
 	Usage: "Enable verbose logging",
 }
 
+var quietFlag = cli.BoolFlag{
+	Name:  "quiet, q",
+	Usage: "Suppress info-level progress logs (errors and warnings still print); useful for hooks and CI",
+}
+
 var excludeFlag = cli.StringSliceFlag{
 	Name:  "exclude, e",
 	Usage: "Glob patterns to exclude (can be repeated)",
@@ -80,4 +85,54 @@ var configFlag = cli.StringFlag{
 	Name:  "config, c",
 	Value: "",
 	Usage: "Path to config file (default: auto-discover .dupehound.yml walking up from cwd)",
+}
+
+var includeFlag = cli.StringSliceFlag{
+	Name:  "include, i",
+	Usage: "Glob patterns to include (can be repeated; if set, only matching files are scanned; supports **)",
+}
+
+var topFlag = cli.IntFlag{
+	Name:  "top",
+	Value: 10,
+	Usage: "Max clones to show in text/md output (0 = show all)",
+}
+
+var sinceFlag = cli.StringFlag{
+	Name:  "since",
+	Value: "",
+	Usage: "Git ref for diff-aware scanning (e.g. main, HEAD~5, v1.0.0); only reports clones touching changed lines",
+}
+
+var showSuppressedFlag = cli.BoolFlag{
+	Name:  "show-suppressed",
+	Usage: "Include suppressed clones in output (tagged as [suppressed])",
+}
+
+var deadCodeFlag = cli.BoolFlag{
+	Name:  "dead-code",
+	Usage: "Detect likely-dead functions (functions with no external callers); heuristic only",
+}
+
+var gitChurnFlag = cli.BoolFlag{
+	Name:  "git-churn",
+	Usage: "Annotate clones with git commit churn scores and re-sort by churn",
+}
+
+var churnDaysFlag = cli.IntFlag{
+	Name:  "churn-days",
+	Value: 90,
+	Usage: "Rolling window in days for git churn counting (used with --git-churn)",
+}
+
+var maxFilesFlag = cli.IntFlag{
+	Name:  "max-files",
+	Value: 0,
+	Usage: "Hard cap on the number of source files to scan (0 = no cap); fail fast on runaway trees",
+}
+
+var maxPairsFlag = cli.IntFlag{
+	Name:  "max-pairs",
+	Value: 0,
+	Usage: "Hard cap on fuzzy candidate pairs (0 = no cap); fail fast before allocating large dedup maps",
 }

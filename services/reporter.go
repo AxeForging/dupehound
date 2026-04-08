@@ -14,12 +14,15 @@ const (
 	defaultTopClones   = 10
 	defaultTopHotspots = 10
 	previewMaxLines    = 5
+	maxInstancesShown  = 6 // cap clone instances printed per clone (rest summarized as "+N more")
 )
 
 // FormatOptions controls text output presentation.
 type FormatOptions struct {
-	ScanPath string // base path for relative file paths
-	Verbose  bool   // show all clones with previews
+	ScanPath       string // base path for relative file paths
+	Verbose        bool   // show all clones with previews
+	Top            int    // max clones shown (0 = use defaultTopClones, -1 = all)
+	ShowSuppressed bool   // include suppressed clones in output
 }
 
 // FormatReport formats a Report as text, json, sarif, or md.
@@ -75,6 +78,22 @@ func topN(total int, defaultN int, verbose bool) int {
 	return defaultN
 }
 
+// topNWithOpt returns how many items to show, respecting the Top option.
+// top == 0 means use defaultTopClones; top == -1 or verbose means show all.
+func topNWithOpt(total int, opt FormatOptions) int {
+	if opt.Verbose {
+		return total
+	}
+	n := opt.Top
+	if n == 0 {
+		n = defaultTopClones
+	}
+	if n < 0 || n >= total {
+		return total
+	}
+	return n
+}
+
 func relPath(absPath, basePath string) string {
 	if basePath == "" {
 		return absPath
@@ -93,17 +112,33 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 
 	fmt.Fprintf(&b, "dupehound scan results\n")
 	fmt.Fprintf(&b, "======================\n")
+	if report.SinceDiffRef != "" {
+		fmt.Fprintf(&b, "Scanning diff  : since %s  (%d files changed)\n", report.SinceDiffRef, report.SinceDiffFiles)
+	}
 	fmt.Fprintf(&b, "Files scanned : %d / %d\n", report.ScannedFiles, report.TotalFiles)
+	if report.SkippedFiles > 0 {
+		fmt.Fprintf(&b, "Skipped files : %d (binary)\n", report.SkippedFiles)
+	}
 	fmt.Fprintf(&b, "Total lines   : %d\n", report.TotalLines)
-	fmt.Fprintf(&b, "Clones found  : %d\n", report.TotalClones)
+	if report.SuppressedClones > 0 {
+		fmt.Fprintf(&b, "Clones found  : %d (%d suppressed)\n", report.TotalClones, report.SuppressedClones)
+	} else {
+		fmt.Fprintf(&b, "Clones found  : %d\n", report.TotalClones)
+	}
 	fmt.Fprintf(&b, "Duplicate lines: %d (%.1f%%)\n", report.DuplicateLines, report.DuplicationPct)
 
-	if report.TotalClones == 0 {
+	if report.SinceDiffRef != "" {
+		fmt.Fprintf(&b, "New clones    : %d since %s\n", len(report.NewClones), report.SinceDiffRef)
+	}
+
+	if report.TotalClones == 0 && len(report.DeadFunctions) == 0 {
 		fmt.Fprintf(&b, "\nNo duplicates found.\n")
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "Breakdown     : %s\n", typeBreakdown(report.Clones))
+	if report.TotalClones > 0 {
+		fmt.Fprintf(&b, "Breakdown     : %s\n", typeBreakdown(report.Clones))
+	}
 
 	if len(report.FileStats) > 0 {
 		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
@@ -118,30 +153,100 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 		}
 	}
 
-	sorted := sortClonesByImpact(report.Clones)
-	cloneLimit := topN(len(sorted), defaultTopClones, opts.Verbose)
+	if report.TotalClones > 0 {
+		sorted := sortClonesByImpact(report.Clones)
 
-	fmt.Fprintf(&b, "\nTop clones (by impact):\n")
-	for i := 0; i < cloneLimit; i++ {
-		writeCloneText(&b, i+1, sorted[i], opts, true)
-	}
-	if len(sorted) > cloneLimit {
-		fmt.Fprintf(&b, "  ... %d more clones (use --verbose to show all)\n\n", len(sorted)-cloneLimit)
+		// Partition: test↔prod clones go in their own section, the rest are
+		// shown under "Top clones". This avoids double-listing.
+		var testProdClones, normalClones []domain.Clone
+		for _, c := range sorted {
+			if c.Suppressed && !opts.ShowSuppressed {
+				continue
+			}
+			if c.TestProdSpan {
+				testProdClones = append(testProdClones, c)
+			} else {
+				normalClones = append(normalClones, c)
+			}
+		}
+
+		if len(testProdClones) > 0 {
+			tpLimit := topNWithOpt(len(testProdClones), opts)
+			fmt.Fprintf(&b, "\nTest↔Prod clones (span test and production files):\n")
+			for i := 0; i < tpLimit; i++ {
+				writeCloneTextWithTag(&b, i+1, testProdClones[i], opts, true, cloneBadges(testProdClones[i]))
+			}
+			if len(testProdClones) > tpLimit {
+				fmt.Fprintf(&b, "  ... %d more test↔prod clones (use --verbose or --top 0 to show all)\n\n", len(testProdClones)-tpLimit)
+			}
+		}
+
+		cloneLimit := topNWithOpt(len(normalClones), opts)
+		fmt.Fprintf(&b, "\nTop clones (by impact):\n")
+		for i := 0; i < cloneLimit; i++ {
+			writeCloneTextWithTag(&b, i+1, normalClones[i], opts, true, cloneBadges(normalClones[i]))
+		}
+		if len(normalClones) > cloneLimit {
+			fmt.Fprintf(&b, "  ... %d more clones (use --verbose or --top 0 to show all)\n\n", len(normalClones)-cloneLimit)
+		}
 	}
 
-	fmt.Fprintf(&b, "All clones:\n")
-	for i, c := range sorted {
-		writeCloneText(&b, i+1, c, opts, opts.Verbose)
+	// Dead function report.
+	if len(report.DeadFunctions) > 0 {
+		fmt.Fprintf(&b, "\nDead functions : %d\n", len(report.DeadFunctions))
+		fmt.Fprintf(&b, "Note: dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.\n")
+		dfLimit := topNWithOpt(len(report.DeadFunctions), opts)
+		for i := 0; i < dfLimit; i++ {
+			df := report.DeadFunctions[i]
+			fmt.Fprintf(&b, "  %s:%d\t%s\n", relPath(df.File, opts.ScanPath), df.Line, df.Name)
+		}
+		if len(report.DeadFunctions) > dfLimit {
+			fmt.Fprintf(&b, "  ... %d more (use --verbose or --top 0 to show all)\n", len(report.DeadFunctions)-dfLimit)
+		}
 	}
 
 	return b.String()
 }
 
-func writeCloneText(b *strings.Builder, num int, c domain.Clone, opts FormatOptions, showPreview bool) {
-	fmt.Fprintf(b, "  #%-4d %s  similarity: %.2f  %d lines  %d tokens  %d instances\n",
-		num, c.Type, c.Similarity, c.LineCount, c.TokenCount, len(c.Instances))
-	for _, inst := range c.Instances {
-		fmt.Fprintf(b, "        %s:%d-%d\n", relPath(inst.File, opts.ScanPath), inst.StartLine, inst.EndLine)
+// cloneBadges builds the inline badge string for a clone in text output —
+// includes suppressed and churn signals (test↔prod is rendered separately
+// inside writeCloneTextWithTag).
+func cloneBadges(c domain.Clone) string {
+	tag := ""
+	if c.Suppressed {
+		tag += " [suppressed]"
+	}
+	if c.ChurnScore > 0 {
+		tag += fmt.Sprintf(" [churn: %d commits]", c.ChurnScore)
+	}
+	return tag
+}
+
+func writeCloneTextWithTag(b *strings.Builder, num int, c domain.Clone, opts FormatOptions, showPreview bool, tag string) {
+	testProdLabel := ""
+	if c.TestProdSpan {
+		testProdLabel = " [test↔prod]"
+	}
+	fmt.Fprintf(b, "  #%-4d %s  similarity: %.2f  %d lines  %d tokens  %d instances%s%s\n",
+		num, c.Type, c.Similarity, c.LineCount, c.TokenCount, len(c.Instances), testProdLabel, tag)
+	instLimit := len(c.Instances)
+	if !opts.Verbose && instLimit > maxInstancesShown {
+		instLimit = maxInstancesShown
+	}
+	for i := 0; i < instLimit; i++ {
+		inst := c.Instances[i]
+		testLabel := ""
+		if inst.IsTest {
+			testLabel = " [test]"
+		}
+		churnLabel := ""
+		if inst.FileCommits > 0 {
+			churnLabel = fmt.Sprintf(" (%d commits)", inst.FileCommits)
+		}
+		fmt.Fprintf(b, "        %s:%d-%d%s%s\n", relPath(inst.File, opts.ScanPath), inst.StartLine, inst.EndLine, testLabel, churnLabel)
+	}
+	if len(c.Instances) > instLimit {
+		fmt.Fprintf(b, "        ... %d more locations (use --verbose to show all)\n", len(c.Instances)-instLimit)
 	}
 	if showPreview && len(c.Instances) > 0 {
 		lines := c.Instances[0].Lines
@@ -167,22 +272,37 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "## dupehound scan results\n\n")
+	if report.SinceDiffRef != "" {
+		fmt.Fprintf(&b, "> Scanning diff since: **%s** (%d files changed)\n\n", report.SinceDiffRef, report.SinceDiffFiles)
+	}
 	fmt.Fprintf(&b, "| Metric | Value |\n")
 	fmt.Fprintf(&b, "|--------|-------|\n")
 	fmt.Fprintf(&b, "| Files scanned | %d / %d |\n", report.ScannedFiles, report.TotalFiles)
+	if report.SkippedFiles > 0 {
+		fmt.Fprintf(&b, "| Skipped (binary) | %d |\n", report.SkippedFiles)
+	}
 	fmt.Fprintf(&b, "| Total lines | %d |\n", report.TotalLines)
-	fmt.Fprintf(&b, "| Clones found | %d |\n", report.TotalClones)
+	if report.SuppressedClones > 0 {
+		fmt.Fprintf(&b, "| Clones found | %d (%d suppressed) |\n", report.TotalClones, report.SuppressedClones)
+	} else {
+		fmt.Fprintf(&b, "| Clones found | %d |\n", report.TotalClones)
+	}
 	fmt.Fprintf(&b, "| Duplicate lines | %d (%.1f%%) |\n", report.DuplicateLines, report.DuplicationPct)
+	if report.SinceDiffRef != "" {
+		fmt.Fprintf(&b, "| New clones since %s | %d |\n", report.SinceDiffRef, len(report.NewClones))
+	}
 
-	if report.TotalClones == 0 {
+	if report.TotalClones == 0 && len(report.DeadFunctions) == 0 {
 		fmt.Fprintf(&b, "\nNo duplicates found.\n")
 		return b.String()
 	}
 
-	fmt.Fprintf(&b, "| Breakdown | %s |\n", typeBreakdown(report.Clones))
+	if report.TotalClones > 0 {
+		fmt.Fprintf(&b, "| Breakdown | %s |\n", typeBreakdown(report.Clones))
+	}
 
-	// --- Hotspots ---
-	if len(report.FileStats) > 0 {
+	// --- Hotspots / clones (skip when there are no clones at all) ---
+	if report.TotalClones > 0 && len(report.FileStats) > 0 {
 		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
 
 		fmt.Fprintf(&b, "\n### Hotspots\n\n")
@@ -207,17 +327,60 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 		}
 	}
 
-	// --- Top clones ---
-	sorted := sortClonesByImpact(report.Clones)
-	cloneLimit := topN(len(sorted), defaultTopClones, opts.Verbose)
+	// --- Test↔Prod / Top clones (only when clones exist) ---
+	if report.TotalClones > 0 {
+		sortedAll := sortClonesByImpact(report.Clones)
+		var testProdClones, normalClones []domain.Clone
+		for _, c := range sortedAll {
+			if c.Suppressed && !opts.ShowSuppressed {
+				continue
+			}
+			if c.TestProdSpan {
+				testProdClones = append(testProdClones, c)
+			} else {
+				normalClones = append(normalClones, c)
+			}
+		}
 
-	fmt.Fprintf(&b, "\n### Top clones (by impact)\n\n")
-	for i := 0; i < cloneLimit; i++ {
-		writeCloneMd(&b, i+1, sorted[i], opts)
+		if len(testProdClones) > 0 {
+			tpLimit := topNWithOpt(len(testProdClones), opts)
+			fmt.Fprintf(&b, "\n### Test↔Prod clones\n\n")
+			for i := 0; i < tpLimit; i++ {
+				writeCloneMd(&b, i+1, testProdClones[i], opts)
+			}
+			if len(testProdClones) > tpLimit {
+				fmt.Fprintf(&b, "\n> %d more test↔prod clones not shown.\n", len(testProdClones)-tpLimit)
+			}
+		}
+
+		// Top clones (excluding test↔prod, which were already listed above).
+		cloneLimit := topNWithOpt(len(normalClones), opts)
+		fmt.Fprintf(&b, "\n### Top clones (by impact)\n\n")
+		for i := 0; i < cloneLimit; i++ {
+			writeCloneMd(&b, i+1, normalClones[i], opts)
+		}
+		if len(normalClones) > cloneLimit {
+			fmt.Fprintf(&b, "\n> %d more clones not shown. Run `dupehound scan --verbose` or `--top 0` for full results.\n", len(normalClones)-cloneLimit)
+		}
 	}
 
-	if len(sorted) > cloneLimit {
-		fmt.Fprintf(&b, "\n> %d more clones not shown. Run `dupehound scan --verbose` for full results.\n", len(sorted)-cloneLimit)
+	// --- Dead functions (capped to top-N, overflow in <details>) ---
+	if len(report.DeadFunctions) > 0 {
+		fmt.Fprintf(&b, "\n### Dead functions (%d)\n\n", len(report.DeadFunctions))
+		fmt.Fprintf(&b, "> **Note:** dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.\n\n")
+		dfLimit := topNWithOpt(len(report.DeadFunctions), opts)
+		for i := 0; i < dfLimit; i++ {
+			df := report.DeadFunctions[i]
+			fmt.Fprintf(&b, "- `%s:%d` — `%s`\n", relPath(df.File, opts.ScanPath), df.Line, df.Name)
+		}
+		if len(report.DeadFunctions) > dfLimit {
+			fmt.Fprintf(&b, "\n<details>\n<summary>%d more dead functions...</summary>\n\n", len(report.DeadFunctions)-dfLimit)
+			for i := dfLimit; i < len(report.DeadFunctions); i++ {
+				df := report.DeadFunctions[i]
+				fmt.Fprintf(&b, "- `%s:%d` — `%s`\n", relPath(df.File, opts.ScanPath), df.Line, df.Name)
+			}
+			fmt.Fprintf(&b, "\n</details>\n")
+		}
 	}
 
 	return b.String()
@@ -230,14 +393,41 @@ func writeCloneMd(b *strings.Builder, num int, c domain.Clone, opts FormatOption
 		lang = mdLangHint(c.Instances[0].File)
 	}
 
-	summary := fmt.Sprintf("#%d &nbsp; <code>%s</code> &nbsp; similarity: %.2f &nbsp; %d lines &nbsp; %d instances",
-		num, c.Type, c.Similarity, c.LineCount, len(c.Instances))
+	// Build inline badges so PR readers see test↔prod / churn / suppressed at a glance.
+	badges := ""
+	if c.TestProdSpan {
+		badges += " &nbsp; 🧪 test↔prod"
+	}
+	if c.ChurnScore > 0 {
+		badges += fmt.Sprintf(" &nbsp; 🔥 churn %d", c.ChurnScore)
+	}
+	if c.Suppressed {
+		badges += " &nbsp; 🚫 suppressed"
+	}
+
+	summary := fmt.Sprintf("#%d &nbsp; <code>%s</code> &nbsp; similarity: %.2f &nbsp; %d lines &nbsp; %d instances%s",
+		num, c.Type, c.Similarity, c.LineCount, len(c.Instances), badges)
 
 	fmt.Fprintf(b, "<details>\n<summary>%s</summary>\n\n", summary)
 
 	fmt.Fprintf(b, "**Locations:**\n")
-	for _, inst := range c.Instances {
-		fmt.Fprintf(b, "- `%s:%d-%d`\n", relPath(inst.File, opts.ScanPath), inst.StartLine, inst.EndLine)
+	instLimit := len(c.Instances)
+	if !opts.Verbose && instLimit > maxInstancesShown {
+		instLimit = maxInstancesShown
+	}
+	for i := 0; i < instLimit; i++ {
+		inst := c.Instances[i]
+		extra := ""
+		if inst.IsTest {
+			extra += " _(test)_"
+		}
+		if inst.FileCommits > 0 {
+			extra += fmt.Sprintf(" — %d commits in window", inst.FileCommits)
+		}
+		fmt.Fprintf(b, "- `%s:%d-%d`%s\n", relPath(inst.File, opts.ScanPath), inst.StartLine, inst.EndLine, extra)
+	}
+	if len(c.Instances) > instLimit {
+		fmt.Fprintf(b, "- _… %d more locations (run with `--verbose` to show all)_\n", len(c.Instances)-instLimit)
 	}
 
 	if len(c.Instances) > 0 && len(c.Instances[0].Lines) > 0 {
@@ -393,8 +583,12 @@ func formatSARIF(report *domain.Report) (string, error) {
 				},
 			})
 		}
+		ruleID := "DUPE001"
+		if clone.TestProdSpan {
+			ruleID = "DUPE002"
+		}
 		results = append(results, sarifResult{
-			RuleID:    "DUPE001",
+			RuleID:    ruleID,
 			Message:   sarifMessage{Text: fmt.Sprintf("Clone #%d (%s): %d duplicate lines across %d locations", i+1, clone.Type, clone.LineCount, len(clone.Instances))},
 			Locations: locs,
 			Properties: sarifResultProperties{
@@ -417,6 +611,10 @@ func formatSARIF(report *domain.Report) (string, error) {
 							{
 								ID:               "DUPE001",
 								ShortDescription: sarifMessage{Text: "Duplicate code block detected"},
+							},
+							{
+								ID:               "DUPE002",
+								ShortDescription: sarifMessage{Text: "Duplicate code block spanning test and production files"},
 							},
 						},
 					},
