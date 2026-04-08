@@ -86,8 +86,8 @@ jobs:
         run: make build-local
       - name: Run dupehound scan
         run: |
-          ./dupehound scan --exit-zero --verbose
-          ./dupehound scan --exit-zero --format md > /tmp/dupehound-report.md
+          ./dupehound scan --exit-zero --verbose --dead-code
+          ./dupehound scan --exit-zero --quiet --dead-code --format md > /tmp/dupehound-report.md
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           echo "" >> /tmp/dupehound-report.md
           echo "---" >> /tmp/dupehound-report.md
