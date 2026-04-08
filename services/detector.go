@@ -66,6 +66,19 @@ type DetectOptions struct {
 	MinTokens     int
 	MinSimilarity float64
 	MaxBucket     int // max blocks per fuzzy mini-hash bucket (0 = default 500)
+	// MaxPairs, if > 0, hard-caps the number of fuzzy candidate pairs the
+	// detector is allowed to evaluate. When the cap is exceeded, fuzzy
+	// detection is aborted and the partial result so far is discarded; the
+	// caller is expected to lower --max-bucket or set --similarity 1.0.
+	// 0 means no cap (original behavior).
+	MaxPairs int
+	// InScopeFiles, when non-nil, restricts detection to clones where at
+	// least one instance is in a file marked true. Indexed by the position
+	// of the file in the `files` slice passed to DetectWithOptions. The
+	// fuzzy detector also uses this to skip candidate pairs where neither
+	// block is in scope, which is the main cost win for diff-aware scanning.
+	// Nil means "all files in scope" (original behavior).
+	InScopeFiles []bool
 }
 
 func Detect(files []TokenizedFile, minTokens int, minSimilarity float64) []domain.Clone {
@@ -75,13 +88,26 @@ func Detect(files []TokenizedFile, minTokens int, minSimilarity float64) []domai
 	})
 }
 
+// fileInScope is a small helper that returns true if either the scope filter
+// is disabled (nil) or the given file index is marked in scope. Out-of-range
+// indices are treated as in-scope to keep the helper safe at call sites.
+func fileInScope(scope []bool, fileIdx int) bool {
+	if scope == nil {
+		return true
+	}
+	if fileIdx < 0 || fileIdx >= len(scope) {
+		return true
+	}
+	return scope[fileIdx]
+}
+
 // DetectWithOptions finds all clone groups with full control over detection parameters.
 func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone {
 	if len(files) == 0 || opts.MinTokens <= 0 {
 		return nil
 	}
 
-	exact := detectExact(files, opts.MinTokens)
+	exact := detectExact(files, opts.MinTokens, opts.InScopeFiles)
 
 	if opts.MinSimilarity >= 1.0 {
 		return exact
@@ -92,12 +118,14 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone
 		maxBucket = 5000
 	}
 
-	fuzzy := detectFuzzy(files, opts.MinTokens, opts.MinSimilarity, maxBucket, exact)
+	fuzzy := detectFuzzy(files, opts.MinTokens, opts.MinSimilarity, maxBucket, exact, opts.InScopeFiles, opts.MaxPairs)
 	return append(exact, fuzzy...)
 }
 
 // detectExact finds type-1 and type-2 clones using hash-based sliding windows.
-func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
+// inScopeFiles, if non-nil, causes the detector to skip clone groups where
+// no participating file is in scope (used by --since for diff-aware scanning).
+func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []domain.Clone {
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
 	// Skip windows that are not fully inside a function body.
 	posToHash := make([][]uint64, len(files))
@@ -199,6 +227,27 @@ func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 			continue
 		}
 
+		// Diff-aware scope filter: skip this clone group if none of the
+		// participating files were marked in scope by --since. This is the
+		// upfront work-skip that turns --since from a post-filter into a
+		// real cost reduction.
+		if inScopeFiles != nil {
+			anyInScope := false
+			for _, s := range starts {
+				if fileInScope(inScopeFiles, s.FileIdx) {
+					anyInScope = true
+					break
+				}
+			}
+			if !anyInScope {
+				// Mark covered so the same hash group isn't reconsidered.
+				for _, s := range starts {
+					covered[globalPos{s.FileIdx, s.Pos}] = true
+				}
+				continue
+			}
+		}
+
 		// Step 5: extend forward greedily.
 		extLen := 0
 		for {
@@ -257,7 +306,12 @@ func detectExact(files []TokenizedFile, minTokens int) []domain.Clone {
 // detectFuzzy finds type-3 near-miss clones using mini-window Jaccard similarity.
 // It skips blocks already covered by exact clones.
 // Requires minTokens >= 10 to produce meaningful mini-windows; returns nil otherwise.
-func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone) []domain.Clone {
+// inScopeFiles, if non-nil, causes candidate pair construction to skip pairs
+// where neither block is in a file marked in scope (used by --since).
+// maxPairs, if > 0, aborts fuzzy detection when the candidate pair count
+// would exceed the cap; the partial result is discarded and the function
+// returns nil. Caller is responsible for surfacing this to the user via a log.
+func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone, inScopeFiles []bool, maxPairs int) []domain.Clone {
 	if minTokens < 10 {
 		return nil
 	}
@@ -373,8 +427,17 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 		for i := 0; i < len(bucket); i++ {
 			for j := i + 1; j < len(bucket); j++ {
 				a, b := bucket[i], bucket[j]
-				// Skip same-file overlapping blocks.
 				ba, bb := blocks[a], blocks[b]
+				// Diff-aware scope filter: skip pairs where neither block
+				// touches a file in scope. This is the dominant cost win
+				// for --since on a large repo because it cuts the pair set
+				// (and the dedup map) before any Jaccard work.
+				if inScopeFiles != nil &&
+					!fileInScope(inScopeFiles, ba.key.fileIdx) &&
+					!fileInScope(inScopeFiles, bb.key.fileIdx) {
+					continue
+				}
+				// Skip same-file overlapping blocks.
 				if ba.key.fileIdx == bb.key.fileIdx {
 					dist := ba.key.pos - bb.key.pos
 					if dist < 0 {
@@ -391,6 +454,13 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 				if !seen[p] {
 					seen[p] = true
 					pairs = append(pairs, p)
+					if maxPairs > 0 && len(pairs) > maxPairs {
+						helpers.Log.Warn().
+							Int("max_pairs", maxPairs).
+							Int("buckets_processed", len(seen)).
+							Msg("fuzzy detector aborted: --max-pairs cap exceeded; skipping type-3 detection (lower --max-bucket, raise --max-pairs, or use --similarity 1.0)")
+						return nil
+					}
 				}
 			}
 		}

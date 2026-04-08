@@ -2,6 +2,7 @@ package services
 
 import (
 	"bytes"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -31,6 +32,8 @@ type ScanOptions struct {
 	GitChurn       bool    // annotate clones with git churn scores
 	ChurnDays      int     // number of days for git churn window (default 90)
 	IgnoreFile     string  // path to .dupehound-ignore file (auto-discovered if empty)
+	MaxFiles       int     // hard cap on collected files (0 = no cap); fail-fast safety net
+	MaxPairs       int     // hard cap on fuzzy candidate pairs (0 = no cap); fail-fast safety net
 }
 
 // ScannerService performs code duplication detection.
@@ -58,6 +61,18 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	}
 	if len(files) == 0 {
 		return nil, helpers.ErrNoFilesFound
+	}
+
+	// Hard cap: refuse to scan absurdly large file sets up front. The cap is
+	// off by default; users opt in via --max-files when running unattended on
+	// monorepos so a misconfigured --path can't OOM or hang the runner.
+	if opts.MaxFiles > 0 && len(files) > opts.MaxFiles {
+		helpers.Log.Error().
+			Int("collected", len(files)).
+			Int("max_files", opts.MaxFiles).
+			Msg("file collection exceeded --max-files cap")
+		return nil, fmt.Errorf("%w: collected %d files, cap is %d (narrow with --include / --exclude or raise --max-files)",
+			helpers.ErrTooManyFiles, len(files), opts.MaxFiles)
 	}
 
 	helpers.Log.Debug().Int("files", len(files)).Msg("collected files")
@@ -111,10 +126,73 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	if minSimilarity <= 0 {
 		minSimilarity = 0.70
 	}
+
+	// Diff-aware: resolve the changed-files set BEFORE detection so the
+	// detector can skip clones whose instances are all in unchanged files.
+	// We also keep the line ranges around to refine the report afterwards
+	// with line-precise NewClones data.
+	//
+	// Path normalization: getChangedLines returns the changed-file map keyed
+	// by absolute paths, but tokenized files carry whatever path form the
+	// walker produced (relative when --path was relative). We rekey the map
+	// so both the scope filter and the post-detection NewClones filter work
+	// regardless of how the user passed --path. This was a silent bug pre-fix:
+	// `dupehound scan --path . --since main` would always report 0 clones.
+	var changedLines map[string][]changedLineRange
+	var sinceDiffFiles int
+	var inScopeFiles []bool
+	if opts.Since != "" {
+		absPath, absErr := filepath.Abs(opts.Path)
+		if absErr != nil {
+			absPath = opts.Path
+		}
+		cl, cf, diffErr := getChangedLines(absPath, opts.Since)
+		if diffErr != nil {
+			helpers.Log.Warn().Err(diffErr).Str("ref", opts.Since).Msg("could not get git diff, falling back to full scan")
+		} else {
+			// Rekey by the same form used in tokenizedFiles[i].Path so the
+			// downstream lookups (scope filter AND NewClones filter) match.
+			changedLines = make(map[string][]changedLineRange, len(cl))
+			tfByAbs := make(map[string]string, len(tokenizedFiles))
+			for _, tf := range tokenizedFiles {
+				abs, err := filepath.Abs(tf.Path)
+				if err != nil {
+					abs = tf.Path
+				}
+				tfByAbs[filepath.Clean(abs)] = tf.Path
+			}
+			for absKey, ranges := range cl {
+				if origPath, ok := tfByAbs[filepath.Clean(absKey)]; ok {
+					changedLines[origPath] = ranges
+				}
+			}
+			sinceDiffFiles = cf
+			inScopeFiles = make([]bool, len(tokenizedFiles))
+			for i, tf := range tokenizedFiles {
+				if _, ok := changedLines[tf.Path]; ok {
+					inScopeFiles[i] = true
+				}
+			}
+			inScope := 0
+			for _, b := range inScopeFiles {
+				if b {
+					inScope++
+				}
+			}
+			helpers.Log.Info().
+				Int("changed_files", cf).
+				Int("in_scope_tokenized", inScope).
+				Int("total_tokenized", len(tokenizedFiles)).
+				Msg("diff-aware scope")
+		}
+	}
+
 	clones := DetectWithOptions(tokenizedFiles, DetectOptions{
 		MinTokens:     minTokens,
 		MinSimilarity: minSimilarity,
 		MaxBucket:     opts.MaxBucket,
+		MaxPairs:      opts.MaxPairs,
+		InScopeFiles:  inScopeFiles,
 	})
 	clones = deduplicateOverlapping(clones)
 
@@ -150,21 +228,12 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		}
 	}
 
-	// Diff-aware scanning: filter to clones touching changed lines.
+	// Diff-aware scanning: refine to clones whose instances overlap actual
+	// changed line ranges. The file-level filter has already run upfront in
+	// the detector; this is the line-precise pass that produces NewClones.
 	var newClones []domain.Clone
-	var sinceDiffFiles int
-	if opts.Since != "" {
-		absPath, err := filepath.Abs(opts.Path)
-		if err != nil {
-			absPath = opts.Path
-		}
-		changedLines, changedFiles, diffErr := getChangedLines(absPath, opts.Since)
-		if diffErr != nil {
-			helpers.Log.Warn().Err(diffErr).Str("ref", opts.Since).Msg("could not get git diff, falling back to full scan")
-		} else {
-			sinceDiffFiles = changedFiles
-			newClones = filterClonesInDiff(clones, changedLines)
-		}
+	if opts.Since != "" && changedLines != nil {
+		newClones = filterClonesInDiff(clones, changedLines)
 	}
 
 	// Git churn annotation.
