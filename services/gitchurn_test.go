@@ -1,6 +1,9 @@
 package services
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,6 +137,157 @@ func TestGitChurn_TextOutput(t *testing.T) {
 	}
 	if !strings.Contains(out, "4 commits") {
 		t.Error("expected per-instance commit count in text output")
+	}
+}
+
+// gitCommit runs `git commit` in dir with a deterministic author so the test does
+// not depend on the developer's local git config.
+func gitCommit(t *testing.T, dir, msg string) {
+	t.Helper()
+	cmd := exec.Command("git",
+		"-c", "user.name=dupehound-test",
+		"-c", "user.email=test@dupehound.local",
+		"-c", "commit.gpgsign=false",
+		"commit", "--allow-empty", "-m", msg,
+	)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit failed: %v\n%s", err, out)
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+// TestGitChurn_EndToEndRealRepo is a regression test for issue #23 that exercises
+// the actual git plumbing rather than synthetic data. It builds a real repo with
+// known commit history (file a.go has 4 distinct commits, file b.go has 1) and
+// asserts that:
+//   - per-instance FileCommits matches the real history
+//   - the clone's ChurnScore is the sum across all instances
+//   - clones are sorted by ChurnScore (high → low)
+//
+// This is the test that would catch a future regression in git invocation,
+// path resolution, or commit counting.
+func TestGitChurn_EndToEndRealRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+
+	dir := t.TempDir()
+	gitRun(t, dir, "init", "-q", "-b", "main")
+
+	// Two duplicate Go files. Both contain the same function so the detector
+	// finds a clone whose two instances live in a.go and b.go.
+	dup := `package main
+
+func handler() int {
+	x := compute()
+	y := validate(x)
+	z := transform(y)
+	w := persist(z)
+	notify(w)
+	return w
+}
+`
+	aPath := filepath.Join(dir, "a.go")
+	bPath := filepath.Join(dir, "b.go")
+	if err := os.WriteFile(aPath, []byte(dup), 0o600); err != nil {
+		t.Fatalf("write a.go: %v", err)
+	}
+	if err := os.WriteFile(bPath, []byte(dup), 0o600); err != nil {
+		t.Fatalf("write b.go: %v", err)
+	}
+	gitRun(t, dir, "add", "a.go", "b.go")
+	gitCommit(t, dir, "initial: add a.go and b.go")
+
+	// 3 more commits touching a.go only → a.go should have 4 total commits.
+	for i := 0; i < 3; i++ {
+		appended := dup + "\n// rev " + string(rune('A'+i)) + "\n"
+		if err := os.WriteFile(aPath, []byte(appended), 0o600); err != nil {
+			t.Fatalf("rewrite a.go: %v", err)
+		}
+		gitRun(t, dir, "add", "a.go")
+		gitCommit(t, dir, "modify a.go")
+	}
+
+	svc := NewScannerService()
+	report, err := svc.Scan(ScanOptions{
+		Path:      dir,
+		MinTokens: 10,
+		GitChurn:  true,
+		ChurnDays: 3650, // 10 years — wide enough to catch all commits, narrow enough that git's date parser still accepts it
+	})
+	if err != nil {
+		t.Fatalf("scan failed: %v", err)
+	}
+	if len(report.Clones) == 0 {
+		t.Fatal("expected at least 1 clone between a.go and b.go")
+	}
+
+	// Find the clone whose instances span a.go and b.go.
+	var target *domain.Clone
+	for i := range report.Clones {
+		c := &report.Clones[i]
+		hasA, hasB := false, false
+		for _, inst := range c.Instances {
+			if filepath.Base(inst.File) == "a.go" {
+				hasA = true
+			}
+			if filepath.Base(inst.File) == "b.go" {
+				hasB = true
+			}
+		}
+		if hasA && hasB {
+			target = c
+			break
+		}
+	}
+	if target == nil {
+		t.Fatal("expected a clone spanning both a.go and b.go")
+	}
+
+	// Per-instance assertions: a.go was touched 4 times, b.go was touched 1 time.
+	var aCommits, bCommits int
+	for _, inst := range target.Instances {
+		switch filepath.Base(inst.File) {
+		case "a.go":
+			aCommits = inst.FileCommits
+		case "b.go":
+			bCommits = inst.FileCommits
+		}
+	}
+	if aCommits != 4 {
+		t.Errorf("a.go FileCommits = %d, want 4 (1 initial + 3 modifications)", aCommits)
+	}
+	if bCommits != 1 {
+		t.Errorf("b.go FileCommits = %d, want 1 (only initial)", bCommits)
+	}
+
+	// ChurnScore must equal the sum of per-instance counts.
+	wantScore := 0
+	for _, inst := range target.Instances {
+		wantScore += inst.FileCommits
+	}
+	if target.ChurnScore != wantScore {
+		t.Errorf("ChurnScore = %d, want %d (sum of per-instance commits)", target.ChurnScore, wantScore)
+	}
+	if target.ChurnScore != 5 {
+		t.Errorf("ChurnScore = %d, want 5 (4 + 1)", target.ChurnScore)
+	}
+
+	// Sort invariant: when --git-churn is on, the highest-churn clone is first.
+	for i := 1; i < len(report.Clones); i++ {
+		if report.Clones[i-1].ChurnScore < report.Clones[i].ChurnScore {
+			t.Errorf("clones not sorted by churn descending at index %d: %d < %d",
+				i, report.Clones[i-1].ChurnScore, report.Clones[i].ChurnScore)
+		}
 	}
 }
 

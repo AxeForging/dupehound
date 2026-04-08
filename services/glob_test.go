@@ -227,6 +227,71 @@ func TestScan_IncludeAndExcludeCombined(t *testing.T) {
 	}
 }
 
+// TestScan_IncludeFlag_StrictlyExcludesNonMatching is a barrier test for issue #17:
+// it asserts that files NOT matching the --include patterns are completely absent
+// from the report — not merely missing from clone instances. This catches inverted
+// logic regressions where a non-matching file might still be tokenized or counted.
+func TestScan_IncludeFlag_StrictlyExcludesNonMatching(t *testing.T) {
+	dir := t.TempDir()
+	block := `func helper() {
+	x := compute()
+	process(x)
+	log(x)
+	store(x)
+	return x
+}
+`
+	// Two .go files that are real duplicates of each other.
+	writeTestFile(t, dir, "a.go", "package main\n\n"+block)
+	writeTestFile(t, dir, "b.go", "package main\n\n"+block)
+
+	// A .py file that should be invisible to the scanner under --include **/*.go.
+	pyDir := filepath.Join(dir, "scripts")
+	if err := os.MkdirAll(pyDir, 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	pyContent := "def helper():\n\tx = compute()\n\tprocess(x)\n\tlog(x)\n\tstore(x)\n\treturn x\n"
+	if err := os.WriteFile(filepath.Join(pyDir, "util.py"), []byte(pyContent), 0o600); err != nil {
+		t.Fatalf("write py file: %v", err)
+	}
+	// And a duplicate .py to make sure we'd find a clone if scanned.
+	if err := os.WriteFile(filepath.Join(pyDir, "util2.py"), []byte(pyContent), 0o600); err != nil {
+		t.Fatalf("write py file 2: %v", err)
+	}
+
+	svc := NewScannerService()
+	report, err := svc.Scan(ScanOptions{
+		Path:      dir,
+		MinTokens: 10,
+		Include:   []string{"**/*.go"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Strict count: only the 2 .go files should have been collected.
+	if report.TotalFiles != 2 {
+		t.Errorf("TotalFiles = %d, want 2 (only .go files matching --include should be collected)", report.TotalFiles)
+	}
+	if report.ScannedFiles != 2 {
+		t.Errorf("ScannedFiles = %d, want 2", report.ScannedFiles)
+	}
+
+	// And nothing Python-shaped should appear anywhere in the report.
+	for _, c := range report.Clones {
+		for _, inst := range c.Instances {
+			if filepath.Ext(inst.File) == ".py" {
+				t.Errorf("clone instance %q has .py extension; --include **/*.go should have excluded it", inst.File)
+			}
+		}
+	}
+	for _, fs := range report.FileStats {
+		if filepath.Ext(fs.File) == ".py" {
+			t.Errorf("FileStats contains .py file %q under --include **/*.go", fs.File)
+		}
+	}
+}
+
 // TestMatchesIncludes verifies matchesIncludes correctly handles empty and non-empty slices.
 func TestMatchesIncludes(t *testing.T) {
 	tests := []struct {

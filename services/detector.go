@@ -358,17 +358,16 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 	seen := make(map[pair]bool)
 	var pairs []pair
 
+	truncatedBuckets := 0
+	totalSkipped := 0
 	for _, indices := range miniIndex {
 		if len(indices) < 2 {
 			continue
 		}
 		bucket := indices
 		if len(bucket) > maxBucket {
-			helpers.Log.Warn().
-				Int("total_blocks", len(bucket)).
-				Int("evaluated", maxBucket).
-				Int("skipped", len(bucket)-maxBucket).
-				Msg("fuzzy bucket truncated: common mini-window pattern has too many candidates, some near-miss clones may not be reported")
+			truncatedBuckets++
+			totalSkipped += len(bucket) - maxBucket
 			bucket = bucket[:maxBucket]
 		}
 		for i := 0; i < len(bucket); i++ {
@@ -397,6 +396,16 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 		}
 	}
 
+	// Aggregate the per-bucket truncation events into a single warning so a
+	// hot codebase doesn't spam the log with hundreds of identical lines.
+	if truncatedBuckets > 0 {
+		helpers.Log.Warn().
+			Int("buckets_truncated", truncatedBuckets).
+			Int("blocks_skipped", totalSkipped).
+			Int("max_bucket", maxBucket).
+			Msg("fuzzy bucket truncation: some near-miss clones may not be reported (raise --max-bucket to reduce)")
+	}
+
 	// Evaluate Jaccard similarity for each candidate pair.
 	type fuzzyClone struct {
 		aIdx, bIdx int
@@ -410,8 +419,16 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 			Msg("evaluating fuzzy candidate pairs — this may take a moment on large codebases")
 	}
 
+	// Throttle progress logs to at most ~20 emissions across the whole loop,
+	// regardless of pair count. On a fast machine the previous "every 10k"
+	// produced thousands of lines per second.
+	progressStep := len(pairs) / 20
+	if progressStep < 10000 {
+		progressStep = 10000
+	}
+
 	for i, p := range pairs {
-		if len(pairs) > 10000 && i > 0 && i%10000 == 0 {
+		if len(pairs) > 10000 && i > 0 && i%progressStep == 0 {
 			helpers.Log.Info().
 				Int("evaluated", i).
 				Int("total", len(pairs)).
