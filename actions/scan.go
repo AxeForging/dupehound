@@ -22,8 +22,12 @@ func NewScanAction(svc *services.ScannerService) *ScanAction {
 
 // Execute runs the scan command.
 func (a *ScanAction) Execute(c *cli.Context) error {
-	if c.Bool("verbose") {
+	// Log level: --verbose wins over --quiet (you asked for both, you get debug).
+	switch {
+	case c.Bool("verbose"):
 		helpers.SetupLogger("debug")
+	case c.Bool("quiet"):
+		helpers.SetupLogger("warn")
 	}
 
 	// Load config file: explicit --config flag, then auto-discover from cwd.
@@ -81,6 +85,12 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	opts.GitChurn = c.Bool("git-churn")
 	if c.IsSet("churn-days") {
 		opts.ChurnDays = c.Int("churn-days")
+	}
+	if c.IsSet("max-files") {
+		opts.MaxFiles = c.Int("max-files")
+	}
+	if c.IsSet("max-pairs") {
+		opts.MaxPairs = c.Int("max-pairs")
 	}
 
 	services.ApplyConfigDefaults(&opts, cfg)

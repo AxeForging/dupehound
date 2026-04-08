@@ -36,9 +36,10 @@ func main() {
 			Usage:   "Scan a directory or file for duplicate code",
 			Flags: []cli.Flag{
 				pathFlag, minTokensFlag, minLinesFlag, formatFlag, outputFlag,
-				verboseFlag, excludeFlag, includeFlag, languageFlag, exitZeroFlag,
+				verboseFlag, quietFlag, excludeFlag, includeFlag, languageFlag, exitZeroFlag,
 				similarityFlag, maxBucketFlag, minDuplicationFlag, stagedFlag, configFlag,
 				topFlag, sinceFlag, showSuppressedFlag, deadCodeFlag, gitChurnFlag, churnDaysFlag,
+				maxFilesFlag, maxPairsFlag,
 			},
 			Action: scanAction.Execute,
 		},

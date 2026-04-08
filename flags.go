@@ -37,6 +37,11 @@ var verboseFlag = cli.BoolFlag{
 	Usage: "Enable verbose logging",
 }
 
+var quietFlag = cli.BoolFlag{
+	Name:  "quiet, q",
+	Usage: "Suppress info-level progress logs (errors and warnings still print); useful for hooks and CI",
+}
+
 var excludeFlag = cli.StringSliceFlag{
 	Name:  "exclude, e",
 	Usage: "Glob patterns to exclude (can be repeated)",
@@ -118,4 +123,16 @@ var churnDaysFlag = cli.IntFlag{
 	Name:  "churn-days",
 	Value: 90,
 	Usage: "Rolling window in days for git churn counting (used with --git-churn)",
+}
+
+var maxFilesFlag = cli.IntFlag{
+	Name:  "max-files",
+	Value: 0,
+	Usage: "Hard cap on the number of source files to scan (0 = no cap); fail fast on runaway trees",
+}
+
+var maxPairsFlag = cli.IntFlag{
+	Name:  "max-pairs",
+	Value: 0,
+	Usage: "Hard cap on fuzzy candidate pairs (0 = no cap); fail fast before allocating large dedup maps",
 }
