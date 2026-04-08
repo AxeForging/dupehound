@@ -2,7 +2,7 @@
 
 Practical, copy-pasteable recipes for the things dupehound is good at. Each section is collapsed by default — open the ones you need.
 
-> Quick links: [Pre-commit](#pre-commit-hook) · [CI / PR comments](#ci-on-pull-requests) · [Diff-aware](#diff-aware-scanning) · [Filtering](#filtering-files) · [Suppression](#suppressing-known-duplicates) · [Test↔Prod](#testprod-leak-detection) · [Git churn](#git-churn-ranking) · [Dead code](#dead-function-detection) · [Safe-mode for big repos](#safe-mode-profiles-for-large-repos) · [Output formats](#output-formats) · [Real-world trial](#real-world-trial-clicli)
+> Quick links: [Pre-commit](#pre-commit-hook) · [CI / PR comments](#ci-on-pull-requests) · [Diff-aware](#diff-aware-scanning) · [Filtering](#filtering-files) · [Suppression](#suppressing-known-duplicates) · [Test↔Prod](#testprod-leak-detection) · [Git churn](#git-churn-ranking) · [Dead code](#dead-function-detection) · [Safe-mode for big repos](#safe-mode-profiles-for-large-repos) · [Hook output for AI](#hook-output-and-ai-readability) · [Output formats](#output-formats) · [Real-world trial](#real-world-trial-clicli)
 
 ---
 
@@ -21,6 +21,8 @@ Practical, copy-pasteable recipes for the things dupehound is good at. Each sect
 | Prioritise refactor by churn | [`--git-churn`](#git-churn-ranking) |
 | Find probably-unused functions | [`--dead-code`](#dead-function-detection) |
 | Run safely on a 100k-file monorepo | [Safe-mode profiles](#safe-mode-profiles-for-large-repos) |
+| Cap memory / fail fast on runaway scans | [`--max-files` / `--max-pairs`](#safe-mode-profiles-for-large-repos) |
+| Silence hook log noise but keep failure reasons | [`--quiet` for hooks](#hook-output-and-ai-readability) |
 | Post a PR comment | [`--format md`](#output-formats) |
 | Feed GitHub Code Scanning | [`--format sarif`](#output-formats) |
 
@@ -168,7 +170,7 @@ The header line will read `Scanning diff since: main (N files changed)` and the 
 
 `--since` accepts any git-resolvable ref. The ref is resolved to a SHA *before* any subsequent git invocation (defense-in-depth against shell injection).
 
-> **Note on cost:** `--since` filters detected clones; it does **not** reduce the cost of detection itself. On a huge monorepo, pair it with `--include` to also shrink the file set you tokenize. See [Safe-mode profiles](#safe-mode-profiles-for-large-repos).
+> **Cost:** `--since` is a **real cost reducer**, not just a post-filter. The detector skips clone groups whose instances are all in unchanged files, and the fuzzy detector skips candidate pairs where neither block touches the diff. Measured on `cli/cli` (816 Go files): a full scan takes 2:21, the same scan with `--since HEAD~10` takes **23 seconds** — same correctness, ~6× faster. Works with both relative (`--path .`) and absolute paths.
 </details>
 
 ---
@@ -392,9 +394,16 @@ dupehound has three cost dimensions:
 2. **Exact (type-1 / type-2) detection** — hash-table lookups, near-linear in token count. Fast.
 3. **Fuzzy (type-3) detection** — O(pairs) where `pairs` can grow large on a hot codebase. This is the expensive step and the only OOM risk.
 
-The fuzzy step can be entirely disabled with `--similarity 1.0`, which is the most reliable safety knob. When fuzzy is on, `--max-bucket` (default 5000) caps how many candidates from a single common pattern are considered.
+Safety knobs (in order of impact):
 
-`--since` and `--staged` are **post-detection filters** — they shrink the *report*, not the *work*. To shrink the work, use `--include` to reduce the file set.
+- `--similarity 1.0` — disables the fuzzy detector entirely. Most reliable.
+- `--max-pairs N` — hard cap on fuzzy candidate pairs; fuzzy aborts (with a warning) if it would exceed the cap. Prevents the multi-GB pair dedup map.
+- `--max-files N` — hard cap on collected source files; the scanner fails fast before tokenizing if the file walk produced more than N entries. Catches misconfigured `--path`.
+- `--max-bucket M` — limits how many candidates from a single common pattern the fuzzy detector considers (default 5000).
+- `--since <ref>` — true work-skip: the detector skips clone groups whose instances are all in unchanged files. Pairs with `--include` for tightest scope.
+- `--include "subtree/**"` — shrinks the file set up front. Cheapest unit of work.
+
+`--staged` is still a post-detection filter today (it shrinks the report, not the work); for the cheapest staged scans use `--since HEAD` together with `--staged`, or pair `--staged` with `--similarity 1.0`.
 </details>
 
 <details>
@@ -405,25 +414,29 @@ dupehound scan \
   --staged \
   --similarity 1.0 \
   --min-tokens 80 \
-  --top 5
+  --top 5 \
+  --quiet
 ```
 
-On a real-world trial of `cli/cli` (816 Go files, 219k LOC), this profile completes in **~150 ms**. `--similarity 1.0` is the killswitch — it skips the fuzzy detector entirely.
+On a real-world trial of `cli/cli` (816 Go files, 219k LOC), this profile completes in **~150 ms**. `--similarity 1.0` is the killswitch — it skips the fuzzy detector entirely. `--quiet` removes the start/finish progress logs from stderr but the clone report (the failure reason) is still printed on stdout, so the dev or any LLM watching the hook output sees exactly what's wrong.
 </details>
 
 <details>
-<summary><b>Profile B — bounded CI on a small subtree</b></summary>
+<summary><b>Profile B — bounded CI on a PR diff</b></summary>
 
 ```sh
 dupehound scan \
-  --include "pkg/changed/**" \
+  --since "origin/${BASE_REF}" \
   --similarity 1.0 \
   --format md \
   --output dupe.md \
-  --top 10
+  --top 10 \
+  --quiet
 ```
 
-Combine `--include` (cuts the file set) with `--similarity 1.0` (cuts the algorithm). Memory and time are bounded by the file count under your include glob.
+`--since` is a true cost reducer (the detector skips clone groups whose instances are all in unchanged files), so on a 800-file repo with a 30-file PR diff this runs in seconds instead of minutes. Pair with `--similarity 1.0` for the strictest bound, or drop it if you want type-3 detection on changed code.
+
+Measured on `cli/cli`: full scan 2:21 → `--since HEAD~10` 23 seconds with the same correctness.
 </details>
 
 <details>
@@ -441,15 +454,78 @@ Lower `--max-bucket` is the throttle for the fuzzy detector's worst case. Run on
 </details>
 
 <details>
-<summary><b>What's <i>not</i> protected today</b></summary>
+<summary><b>Profile D — paranoid unattended scan with hard caps</b></summary>
 
-Be aware of these limits if you're running dupehound in unattended pipelines on huge codebases:
+```sh
+dupehound scan \
+  --max-files 20000 \
+  --max-pairs 5000000 \
+  --max-bucket 2000 \
+  --top 20 \
+  --quiet \
+  --format md \
+  --output dupe.md
+```
 
-- **No `--max-files` cap.** A misconfigured `--path` could walk a 100k-file tree.
-- **No timeout.** A runaway scan has no built-in deadline — wrap with `timeout 10m dupehound …` if you need one.
-- **No `--max-pairs` cap.** On a pathological repo the fuzzy detector's pair dedup map can grow to several GB. `--similarity 1.0` is the workaround.
+The hard caps make this profile safe to drop into a cron job or unattended runner without worrying about OOM:
 
-These are tracked as follow-up improvements. For now, prefer Profile A or B for unattended use.
+- `--max-files 20000` fails fast if a misconfigured `--path` walked into a 100k-file tree.
+- `--max-pairs 5000000` aborts fuzzy detection (returning exact-only results plus a warning log) before allocating the multi-GB pair dedup map.
+- `--max-bucket 2000` caps the worst-case fuzzy bucket size below the default.
+- `--quiet` suppresses progress logs on stderr but keeps the report intact (see [hook output for AI tools](#hook-output-and-ai-readability)).
+
+Both caps default to `0` (no cap) so they only kick in when you explicitly opt in.
+</details>
+
+<details>
+<summary><b>What's <i>still</i> not protected today</b></summary>
+
+Even with the safety caps in place, two limitations remain:
+
+- **No timeout.** A runaway scan has no built-in deadline. Wrap with `timeout 10m dupehound …` if you need one.
+- **`--staged` is still a post-detection filter** (unlike `--since`). For the cheapest staged scans, pair it with `--similarity 1.0` or run `--since HEAD --staged` together.
+</details>
+
+### Hook output and AI readability
+
+<details>
+<summary><b>Why <code>--quiet</code> still gives you the failure reason</b></summary>
+
+`--quiet` only suppresses **info-level progress logs on stderr**. It does not touch the actual scan report, which goes to **stdout**. So a failing pre-commit hook or CI step still prints the full clone listing — file paths, line ranges, similarity, and code preview — exactly what a developer or LLM-based code reviewer needs to fix the problem.
+
+```sh
+$ dupehound scan --staged --similarity 1.0 --min-tokens 80 --quiet
+dupehound scan results
+======================
+Files scanned : 12 / 12
+Total lines   : 1842
+Clones found  : 1
+...
+
+Top clones (by impact):
+  #1    type-1  similarity: 1.00  18 lines  124 tokens  2 instances
+        services/handler.go:42-59
+        services/admin_handler.go:71-88
+        | 	if err := validate(req); err != nil {
+        | 		return wrapError(err)
+        | 	}
+        ...
+
+# exit code 1 → hook fails, but the why is fully visible above
+```
+
+Warnings and errors are also preserved on stderr (only INFO is filtered). So if the fuzzy detector hits `--max-pairs`, you'll still see the warning explaining what to do.
+
+Stream layout:
+
+| Stream | Default | With `--quiet` |
+|---|---|---|
+| stdout — scan report (text/md/json/sarif) | ✓ | ✓ |
+| stderr — INFO (starting scan, progress, scope summary) | ✓ | ✗ |
+| stderr — WARN (fuzzy bucket truncation, --max-pairs hit, ref resolve fallback) | ✓ | ✓ |
+| stderr — ERROR (tool errors) | ✓ | ✓ |
+
+This is what makes `--quiet` safe to wire into pre-commit and CI: hooks get less log noise but lose nothing useful when they fail.
 </details>
 
 ---
@@ -522,7 +598,7 @@ Repo: `cli/cli` at HEAD, 816 Go files, ~219k LOC, shallow-cloned (depth 200).
 | Full text | `--top 5` | 2:21 | 268 lines | 4067 clones total, 45% duplication, 16 test↔prod leaks |
 | Full markdown | `--format md --top 3` | 2:20 | 754 lines / 37 KB | Under GitHub 65 KB PR comment limit |
 | Full + churn | `--git-churn --top 3` | 3:20 | 107 lines | Churn-sorted, top entry: a 27-line `view_test.go` fixture (16 commits) |
-| Diff-aware | `--since HEAD~10 --format md` | 2:20 | 863 lines | 34 changed files, 0 *new* clones — diff is clean |
+| Diff-aware (after detector-level scope filter) | `--since HEAD~10` | **0:23** | 25 lines | 34 changed files, 211 in-scope clones — same correctness as full scan, ~6× faster |
 
 Highest-value findings:
 - **96.1 % duplication** in `api/export_pr_test.go`

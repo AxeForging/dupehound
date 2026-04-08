@@ -55,15 +55,21 @@ Options:
   --max-bucket         Max candidates per fuzzy hash bucket [default: 5000]
   --min-duplication    Fail if global duplication % exceeds this value (0 = disabled) [default: 0]
   --staged             Only report clones involving git-staged files (for pre-commit hooks)
-  --since              Git ref for diff-aware scanning (e.g. main, HEAD~5, v1.0.0)
+  --since              Git ref for diff-aware scanning (e.g. main, HEAD~5, v1.0.0).
+                       The detector itself skips work for clones outside the diff —
+                       this is a true cost reduction, not just a post-filter.
   --top                Max clones to show in text/md output (0 = show all) [default: 10]
   --git-churn          Annotate clones with git commit churn and re-sort by churn
   --churn-days         Rolling window in days for git churn (default 90)
   --dead-code          Detect likely-dead functions (heuristic only)
   --show-suppressed    Include suppressed clones in output (tagged [suppressed])
+  --max-files          Hard cap on collected source files (0 = no cap); fail-fast safety net
+  --max-pairs          Hard cap on fuzzy candidate pairs (0 = no cap); fail-fast safety net
   --exit-zero          Always exit 0 even when clones are found
   --config, -c         Path to config file (default: auto-discover .dupehound.yml)
   --verbose, -v        Enable verbose logging
+  --quiet, -q          Suppress info-level progress logs (the clone report on stdout
+                       is unaffected, so failing hooks still show the failure reason)
 ```
 
 ## Quick examples
@@ -124,7 +130,8 @@ Jump straight to a topic:
 - [Test↔Prod leak detection](EXAMPLES.md#testprod-leak-detection)
 - [Git churn ranking (`--git-churn`)](EXAMPLES.md#git-churn-ranking)
 - [Dead function detection (`--dead-code`)](EXAMPLES.md#dead-function-detection)
-- [Safe-mode profiles for large repos](EXAMPLES.md#safe-mode-profiles-for-large-repos)
+- [Safe-mode profiles for large repos (`--max-files`, `--max-pairs`, `--similarity 1.0`)](EXAMPLES.md#safe-mode-profiles-for-large-repos)
+- [Hook output and AI readability (`--quiet`)](EXAMPLES.md#hook-output-and-ai-readability)
 - [Output formats (text, md, json, sarif)](EXAMPLES.md#output-formats)
 - [Real-world trial on `cli/cli`](EXAMPLES.md#real-world-trial-clicli)
 
