@@ -22,16 +22,6 @@ type TokenizedFile struct {
 	Ignored []bool  // per-token: true if in a dupehound:ignore annotated block
 }
 
-// BuildTokenizedFile tokenizes a source file and returns a TokenizedFile.
-func BuildTokenizedFile(path, content string, lang *domain.Language) TokenizedFile {
-	tokens := TokenizeFile(content, lang)
-	return TokenizedFile{
-		Path:   path,
-		Tokens: tokens,
-		InFunc: markFunctionBodies(tokens, lang),
-	}
-}
-
 // BuildTokenizedFileWithIgnore tokenizes a source file, applying inline suppression
 // markers from both the source (dupehound:ignore comments) and the ignore rules.
 func BuildTokenizedFileWithIgnore(path, content string, lang *domain.Language, rules []IgnoreRule) TokenizedFile {
@@ -58,9 +48,6 @@ type globalPos struct {
 	Pos     int // index into the file's token slice
 }
 
-// Detect finds all clone groups (type-1, type-2, and type-3) in the given token sequences.
-// minTokens is the minimum window size. minSimilarity is the Jaccard threshold for type-3
-// detection (set to 1.0 to disable type-3).
 // DetectOptions holds parameters for clone detection.
 type DetectOptions struct {
 	MinTokens     int
@@ -79,13 +66,6 @@ type DetectOptions struct {
 	// block is in scope, which is the main cost win for diff-aware scanning.
 	// Nil means "all files in scope" (original behavior).
 	InScopeFiles []bool
-}
-
-func Detect(files []TokenizedFile, minTokens int, minSimilarity float64) []domain.Clone {
-	return DetectWithOptions(files, DetectOptions{
-		MinTokens:     minTokens,
-		MinSimilarity: minSimilarity,
-	})
 }
 
 // fileInScope is a small helper that returns true if either the scope filter
