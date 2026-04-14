@@ -106,6 +106,20 @@ func findDeadFunctions(defFiles, usageFiles []TokenizedFile) []domain.DeadFunc {
 	return dead
 }
 
+// appendFuncDef records the identifier at tf.Tokens[tokIdx] as a function
+// definition. Centralizes the FunctionDef struct literal used by every
+// per-language scanner in extractFunctionDefs.
+func appendFuncDef(defs []FunctionDef, tf TokenizedFile, langName string, tokIdx int) []FunctionDef {
+	tok := tf.Tokens[tokIdx]
+	return append(defs, FunctionDef{
+		Name:   tok.OrigText,
+		File:   tf.Path,
+		Line:   tok.Line,
+		Lang:   langName,
+		DefTok: tokIdx,
+	})
+}
+
 // extractFunctionDefs extracts function name + location from a TokenizedFile.
 func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 	var defs []FunctionDef
@@ -148,13 +162,7 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 					continue
 				}
 				if next.Kind == TokIdent && next.OrigText != "" {
-					defs = append(defs, FunctionDef{
-						Name:   next.OrigText,
-						File:   tf.Path,
-						Line:   next.Line,
-						Lang:   langName,
-						DefTok: j,
-					})
+					defs = appendFuncDef(defs, tf, langName, j)
 					break
 				}
 				// Stop at opening brace.
@@ -172,13 +180,7 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 				for j := i + 1; j < n; j++ {
 					next := tf.Tokens[j]
 					if next.Kind == TokIdent && next.OrigText != "" {
-						defs = append(defs, FunctionDef{
-							Name:   next.OrigText,
-							File:   tf.Path,
-							Line:   next.Line,
-							Lang:   langName,
-							DefTok: j,
-						})
+						defs = appendFuncDef(defs, tf, langName, j)
 						break
 					}
 					if next.Kind == TokOperator && next.Text == ":" {
@@ -195,13 +197,7 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 				for j := i + 1; j < n; j++ {
 					next := tf.Tokens[j]
 					if next.Kind == TokIdent && next.OrigText != "" {
-						defs = append(defs, FunctionDef{
-							Name:   next.OrigText,
-							File:   tf.Path,
-							Line:   next.Line,
-							Lang:   langName,
-							DefTok: j,
-						})
+						defs = appendFuncDef(defs, tf, langName, j)
 						break
 					}
 					if next.Kind == TokOperator && next.Text == "(" {
@@ -221,13 +217,7 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 					// Only include if the next matching { starts a new function body.
 					// Heuristic: if token at position i is NOT inFunc but i+n tokens ARE, it's a def.
 					// For simplicity, only take top-level idents followed by (.
-					defs = append(defs, FunctionDef{
-						Name:   tok.OrigText,
-						File:   tf.Path,
-						Line:   tok.Line,
-						Lang:   langName,
-						DefTok: i,
-					})
+					defs = appendFuncDef(defs, tf, langName, i)
 				}
 			}
 		}
