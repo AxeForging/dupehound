@@ -94,6 +94,46 @@ func topNWithOpt(total int, opt FormatOptions) int {
 	return n
 }
 
+// partitionClones splits a sorted clone slice into test↔prod and normal
+// clones, skipping suppressed ones unless showSuppressed is set.
+func partitionClones(sorted []domain.Clone, showSuppressed bool) (testProd, normal []domain.Clone) {
+	for _, c := range sorted {
+		if c.Suppressed && !showSuppressed {
+			continue
+		}
+		if c.TestProdSpan {
+			testProd = append(testProd, c)
+		} else {
+			normal = append(normal, c)
+		}
+	}
+	return
+}
+
+// writeClonesTextSection writes a capped list of clones in text format and an
+// overflow line. overflowLabel goes into "  ... N more <label> (use --verbose…)".
+func writeClonesTextSection(b *strings.Builder, clones []domain.Clone, opts FormatOptions, overflowLabel string) {
+	limit := topNWithOpt(len(clones), opts)
+	for i := 0; i < limit; i++ {
+		writeCloneTextWithTag(b, i+1, clones[i], opts, true, cloneBadges(clones[i]))
+	}
+	if len(clones) > limit {
+		fmt.Fprintf(b, "  ... %d more %s (use --verbose or --top 0 to show all)\n\n", len(clones)-limit, overflowLabel)
+	}
+}
+
+// writeClonesMdSection writes a capped list of clones in markdown format.
+// overflowFmt must contain exactly one %d for the remaining count.
+func writeClonesMdSection(b *strings.Builder, clones []domain.Clone, opts FormatOptions, overflowFmt string) {
+	limit := topNWithOpt(len(clones), opts)
+	for i := 0; i < limit; i++ {
+		writeCloneMd(b, i+1, clones[i], opts)
+	}
+	if len(clones) > limit {
+		fmt.Fprintf(b, overflowFmt, len(clones)-limit)
+	}
+}
+
 func relPath(absPath, basePath string) string {
 	if basePath == "" {
 		return absPath
@@ -154,41 +194,15 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 	}
 
 	if report.TotalClones > 0 {
-		sorted := sortClonesByImpact(report.Clones)
-
-		// Partition: test↔prod clones go in their own section, the rest are
-		// shown under "Top clones". This avoids double-listing.
-		var testProdClones, normalClones []domain.Clone
-		for _, c := range sorted {
-			if c.Suppressed && !opts.ShowSuppressed {
-				continue
-			}
-			if c.TestProdSpan {
-				testProdClones = append(testProdClones, c)
-			} else {
-				normalClones = append(normalClones, c)
-			}
-		}
+		testProdClones, normalClones := partitionClones(sortClonesByImpact(report.Clones), opts.ShowSuppressed)
 
 		if len(testProdClones) > 0 {
-			tpLimit := topNWithOpt(len(testProdClones), opts)
 			fmt.Fprintf(&b, "\nTest↔Prod clones (span test and production files):\n")
-			for i := 0; i < tpLimit; i++ {
-				writeCloneTextWithTag(&b, i+1, testProdClones[i], opts, true, cloneBadges(testProdClones[i]))
-			}
-			if len(testProdClones) > tpLimit {
-				fmt.Fprintf(&b, "  ... %d more test↔prod clones (use --verbose or --top 0 to show all)\n\n", len(testProdClones)-tpLimit)
-			}
+			writeClonesTextSection(&b, testProdClones, opts, "test↔prod clones")
 		}
 
-		cloneLimit := topNWithOpt(len(normalClones), opts)
 		fmt.Fprintf(&b, "\nTop clones (by impact):\n")
-		for i := 0; i < cloneLimit; i++ {
-			writeCloneTextWithTag(&b, i+1, normalClones[i], opts, true, cloneBadges(normalClones[i]))
-		}
-		if len(normalClones) > cloneLimit {
-			fmt.Fprintf(&b, "  ... %d more clones (use --verbose or --top 0 to show all)\n\n", len(normalClones)-cloneLimit)
-		}
+		writeClonesTextSection(&b, normalClones, opts, "clones")
 	}
 
 	// Dead function report.
@@ -329,39 +343,15 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 
 	// --- Test↔Prod / Top clones (only when clones exist) ---
 	if report.TotalClones > 0 {
-		sortedAll := sortClonesByImpact(report.Clones)
-		var testProdClones, normalClones []domain.Clone
-		for _, c := range sortedAll {
-			if c.Suppressed && !opts.ShowSuppressed {
-				continue
-			}
-			if c.TestProdSpan {
-				testProdClones = append(testProdClones, c)
-			} else {
-				normalClones = append(normalClones, c)
-			}
-		}
+		testProdClones, normalClones := partitionClones(sortClonesByImpact(report.Clones), opts.ShowSuppressed)
 
 		if len(testProdClones) > 0 {
-			tpLimit := topNWithOpt(len(testProdClones), opts)
 			fmt.Fprintf(&b, "\n### Test↔Prod clones\n\n")
-			for i := 0; i < tpLimit; i++ {
-				writeCloneMd(&b, i+1, testProdClones[i], opts)
-			}
-			if len(testProdClones) > tpLimit {
-				fmt.Fprintf(&b, "\n> %d more test↔prod clones not shown.\n", len(testProdClones)-tpLimit)
-			}
+			writeClonesMdSection(&b, testProdClones, opts, "\n> %d more test↔prod clones not shown.\n")
 		}
 
-		// Top clones (excluding test↔prod, which were already listed above).
-		cloneLimit := topNWithOpt(len(normalClones), opts)
 		fmt.Fprintf(&b, "\n### Top clones (by impact)\n\n")
-		for i := 0; i < cloneLimit; i++ {
-			writeCloneMd(&b, i+1, normalClones[i], opts)
-		}
-		if len(normalClones) > cloneLimit {
-			fmt.Fprintf(&b, "\n> %d more clones not shown. Run `dupehound scan --verbose` or `--top 0` for full results.\n", len(normalClones)-cloneLimit)
-		}
+		writeClonesMdSection(&b, normalClones, opts, "\n> %d more clones not shown. Run `dupehound scan --verbose` or `--top 0` for full results.\n")
 	}
 
 	// --- Dead functions (capped to top-N, overflow in <details>) ---

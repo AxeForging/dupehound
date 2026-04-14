@@ -629,28 +629,27 @@ func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (
 //   - TokKeyword, TokOperator: Kind + Text are hashed, so `if` ≠ `for` and
 //     `+` ≠ `-`, preserving structural differences.
 func hashWindow(tokens []Token) uint64 {
-	h := fnv.New64a()
-	for _, t := range tokens {
-		_, _ = h.Write([]byte{byte(t.Kind)})
-		if t.Text != "" {
-			_, _ = h.Write([]byte(t.Text))
-		}
-		_, _ = h.Write([]byte{0}) // separator
-	}
-	return h.Sum64()
+	return hashTokens(tokens, false)
 }
 
 // hashWindowFull hashes a token window using ALL token text (including OrigText).
 // Unlike hashWindow (used for type-1/2 detection), this preserves identifier and
 // literal differences so that near-miss blocks produce partial mini-window overlap.
 func hashWindowFull(tokens []Token) uint64 {
+	return hashTokens(tokens, true)
+}
+
+// hashTokens is the shared core of hashWindow / hashWindowFull. When
+// includeOrig is true, OrigText is also mixed in so identifier/literal
+// differences are preserved.
+func hashTokens(tokens []Token, includeOrig bool) uint64 {
 	h := fnv.New64a()
 	for _, t := range tokens {
 		_, _ = h.Write([]byte{byte(t.Kind)})
 		if t.Text != "" {
 			_, _ = h.Write([]byte(t.Text))
 		}
-		if t.OrigText != "" {
+		if includeOrig && t.OrigText != "" {
 			_, _ = h.Write([]byte(t.OrigText))
 		}
 		_, _ = h.Write([]byte{0})
