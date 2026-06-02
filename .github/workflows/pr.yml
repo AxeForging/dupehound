@@ -53,7 +53,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Advisory only: the AI review must never block a PR. It depends on an
+      # external provider key (GEMINI_API_KEY) that may be missing or expired,
+      # so a failure here should be visible but non-fatal.
       - uses: AxeForging/reviewforge@main
+        continue-on-error: true
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AI_PROVIDER: gemini
