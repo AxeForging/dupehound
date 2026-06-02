@@ -5,6 +5,7 @@ import (
 	"hash/fnv"
 	"math"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -53,11 +54,11 @@ type DetectOptions struct {
 	MinTokens     int
 	MinSimilarity float64
 	MaxBucket     int // max blocks per fuzzy mini-hash bucket (0 = default 500)
-	// MaxPairs, if > 0, hard-caps the number of fuzzy candidate pairs the
-	// detector is allowed to evaluate. When the cap is exceeded, fuzzy
-	// detection is aborted and the partial result so far is discarded; the
-	// caller is expected to lower --max-bucket or set --similarity 1.0.
-	// 0 means no cap (original behavior).
+	// MaxPairs, if > 0, caps the number of fuzzy candidate pairs the detector
+	// evaluates — a runaway backstop that bounds CPU time on pathological
+	// inputs. When the cap is reached, type-3 detection stops at the next block
+	// boundary and returns the matches found so far (a deterministic PARTIAL
+	// result); type-1/2 clones are unaffected. 0 means no cap.
 	MaxPairs int
 	// InScopeFiles, when non-nil, restricts detection to clones where at
 	// least one instance is in a file marked true. Indexed by the position
@@ -207,6 +208,15 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 			continue
 		}
 
+		// `starts` is assembled from a map, so its order varies run to run.
+		// Sort it for deterministic instance ordering in the output.
+		sort.Slice(starts, func(i, j int) bool {
+			if starts[i].FileIdx != starts[j].FileIdx {
+				return starts[i].FileIdx < starts[j].FileIdx
+			}
+			return starts[i].Pos < starts[j].Pos
+		})
+
 		// Diff-aware scope filter: skip this clone group if none of the
 		// participating files were marked in scope by --since. This is the
 		// upfront work-skip that turns --since from a post-filter into a
@@ -288,9 +298,9 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 // Requires minTokens >= 10 to produce meaningful mini-windows; returns nil otherwise.
 // inScopeFiles, if non-nil, causes candidate pair construction to skip pairs
 // where neither block is in a file marked in scope (used by --since).
-// maxPairs, if > 0, aborts fuzzy detection when the candidate pair count
-// would exceed the cap; the partial result is discarded and the function
-// returns nil. Caller is responsible for surfacing this to the user via a log.
+// maxPairs, if > 0, caps the number of candidate pairs evaluated; when reached,
+// detection stops at the next block boundary and returns the (deterministic)
+// partial set of type-3 matches found so far rather than discarding them.
 func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone, inScopeFiles []bool, maxPairs int) []domain.Clone {
 	if minTokens < 10 {
 		return nil
@@ -331,7 +341,7 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 	// A "block" is a minTokens-wide token window at each position.
 	type blockInfo struct {
 		key       blockKey
-		miniSet   map[uint64]bool
+		miniSet   []uint64 // sorted, deduped mini-window hashes
 		startLine int
 		endLine   int
 	}
@@ -359,17 +369,25 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 				continue
 			}
 
-			// Build mini-window hash set for this block.
+			// Build the mini-window hash set for this block as a sorted,
+			// deduped []uint64. A packed slice costs ~8 bytes/entry vs the
+			// ~50 bytes/entry of a map[uint64]bool; because detectFuzzy
+			// allocates one set per token window across the entire repo, this
+			// is the dominant memory cost and the map form was the source of
+			// multi-GB peaks on large codebases. Set semantics (and therefore
+			// results) are identical — jaccardSimilarity merges two sorted
+			// slices instead of probing a map.
 			// Uses hashWindowFull (includes OrigText) so that different
 			// identifiers/literals produce different mini-hashes,
 			// enabling meaningful Jaccard comparison.
-			miniSet := make(map[uint64]bool)
+			miniSet := make([]uint64, 0, minTokens-miniSize+1)
 			for i := pos; i+miniSize <= pos+minTokens; i++ {
 				h := hashWindowFull(tf.Tokens[i : i+miniSize])
 				if h != 0 {
-					miniSet[h] = true
+					miniSet = append(miniSet, h)
 				}
 			}
+			miniSet = sortDedupU64(miniSet)
 
 			idx := len(blocks)
 			blocks = append(blocks, blockInfo{
@@ -379,122 +397,148 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 				endLine:   endLine,
 			})
 
-			for h := range miniSet {
+			for _, h := range miniSet {
 				miniIndex[h] = append(miniIndex[h], idx)
 			}
 		}
 	}
 
-	// Find candidate pairs: blocks sharing ≥1 mini-window hash.
-	type pair struct {
-		a, b int
-	}
-	seen := make(map[pair]bool)
-	var pairs []pair
-
-	truncatedBuckets := 0
-	totalSkipped := 0
-	for _, indices := range miniIndex {
-		if len(indices) < 2 {
-			continue
-		}
-		bucket := indices
-		if len(bucket) > maxBucket {
-			truncatedBuckets++
-			totalSkipped += len(bucket) - maxBucket
-			bucket = bucket[:maxBucket]
-		}
-		for i := 0; i < len(bucket); i++ {
-			for j := i + 1; j < len(bucket); j++ {
-				a, b := bucket[i], bucket[j]
-				ba, bb := blocks[a], blocks[b]
-				// Diff-aware scope filter: skip pairs where neither block
-				// touches a file in scope. This is the dominant cost win
-				// for --since on a large repo because it cuts the pair set
-				// (and the dedup map) before any Jaccard work.
-				if inScopeFiles != nil &&
-					!fileInScope(inScopeFiles, ba.key.fileIdx) &&
-					!fileInScope(inScopeFiles, bb.key.fileIdx) {
-					continue
-				}
-				// Skip same-file overlapping blocks.
-				if ba.key.fileIdx == bb.key.fileIdx {
-					dist := ba.key.pos - bb.key.pos
-					if dist < 0 {
-						dist = -dist
-					}
-					if dist < minTokens {
-						continue
-					}
-				}
-				p := pair{a, b}
-				if a > b {
-					p = pair{b, a}
-				}
-				if !seen[p] {
-					seen[p] = true
-					pairs = append(pairs, p)
-					if maxPairs > 0 && len(pairs) > maxPairs {
-						helpers.Log.Warn().
-							Int("max_pairs", maxPairs).
-							Int("buckets_processed", len(seen)).
-							Msg("fuzzy detector aborted: --max-pairs cap exceeded; skipping type-3 detection (lower --max-bucket, raise --max-pairs, or use --similarity 1.0)")
-						return nil
-					}
-				}
-			}
-		}
-	}
-
-	// Aggregate the per-bucket truncation events into a single warning so a
-	// hot codebase doesn't spam the log with hundreds of identical lines.
-	if truncatedBuckets > 0 {
-		helpers.Log.Warn().
-			Int("buckets_truncated", truncatedBuckets).
-			Int("blocks_skipped", totalSkipped).
-			Int("max_bucket", maxBucket).
-			Msg("fuzzy bucket truncation: some near-miss clones may not be reported (raise --max-bucket to reduce)")
-	}
-
-	// Evaluate Jaccard similarity for each candidate pair.
+	// Evaluate candidate pairs by STREAMING over blocks instead of
+	// materializing the full pair set. The previous approach built a global
+	// `pairs []pair` slice plus a `seen map[pair]bool` dedup map, both of which
+	// grow with the total number of candidate pairs — millions on a
+	// high-duplication repo — and were the dominant memory cost (multi-GB
+	// peaks). Here each block gathers its partners (other blocks sharing a
+	// mini-hash) into a small scratch set that is reused across iterations and
+	// evaluated inline, so the working set is bounded by a single block's
+	// partner count rather than the whole pair universe.
+	//
+	// Each unordered pair {a,b} is handled exactly once — from the lower index
+	// a, considering only partners b > a — which replaces the global `seen`
+	// dedup with the natural ordering and costs no memory.
 	type fuzzyClone struct {
 		aIdx, bIdx int
 		similarity float64
 	}
 	var fuzzyMatches []fuzzyClone
 
-	if len(pairs) > 1000 {
-		helpers.Log.Info().
-			Int("pairs", len(pairs)).
-			Msg("evaluating fuzzy candidate pairs — this may take a moment on large codebases")
+	truncationOccurred := false
+	evaluated := 0
+
+	// progressStep throttles progress logs to ~20 emissions across the whole
+	// scan, based on block index since the total pair count is no longer known
+	// up front. Below the threshold we stay silent.
+	progressStep := len(blocks) / 20
+	if progressStep < 1 {
+		progressStep = 1
 	}
 
-	// Throttle progress logs to at most ~20 emissions across the whole loop,
-	// regardless of pair count. On a fast machine the previous "every 10k"
-	// produced thousands of lines per second.
-	progressStep := len(pairs) / 20
-	if progressStep < 10000 {
-		progressStep = 10000
-	}
+	capped := false
+	cappedAt := 0
+	partners := make(map[int]struct{}) // reused per block; cleared each iteration
+	for a := 0; a < len(blocks); a++ {
+		// Graceful runaway backstop. If cumulative evaluated pairs already
+		// exceeded the cap, stop here. Cutting on a BLOCK boundary (rather than
+		// mid-block) keeps the partial result deterministic, and unlike a hard
+		// abort it KEEPS the type-3 clones already found instead of discarding
+		// them. Exact (type-1/2) clones are untouched — they are computed before
+		// this function runs — so the worst case is partial type-3, never a
+		// blackout.
+		if maxPairs > 0 && evaluated > maxPairs {
+			capped = true
+			cappedAt = a
+			break
+		}
 
-	for i, p := range pairs {
-		if len(pairs) > 10000 && i > 0 && i%progressStep == 0 {
+		if len(blocks) > 20000 && a > 0 && a%progressStep == 0 {
 			helpers.Log.Info().
-				Int("evaluated", i).
-				Int("total", len(pairs)).
+				Int("blocks_processed", a).
+				Int("total_blocks", len(blocks)).
 				Int("matches_so_far", len(fuzzyMatches)).
 				Msg("fuzzy detection progress")
 		}
-		ba, bb := blocks[p.a], blocks[p.b]
-		sim := jaccardSimilarity(ba.miniSet, bb.miniSet)
-		if sim >= threshold && sim < 1.0 {
-			fuzzyMatches = append(fuzzyMatches, fuzzyClone{p.a, p.b, sim})
+
+		ba := blocks[a]
+		clear(partners)
+		for _, h := range ba.miniSet {
+			bucket := miniIndex[h]
+			if len(bucket) < 2 {
+				continue
+			}
+			if len(bucket) > maxBucket {
+				truncationOccurred = true
+				// miniIndex buckets are built in ascending block-index order,
+				// so [:maxBucket] keeps the same lowest-index members the old
+				// per-bucket truncation did, preserving determinism.
+				bucket = bucket[:maxBucket]
+			}
+			for _, b := range bucket {
+				if b > a {
+					partners[b] = struct{}{}
+				}
+			}
+		}
+
+		for b := range partners {
+			bb := blocks[b]
+			// Diff-aware scope filter: skip pairs where neither block touches a
+			// file in scope. This is the dominant cost win for --since on a
+			// large repo because it cuts the work before any Jaccard math.
+			if inScopeFiles != nil &&
+				!fileInScope(inScopeFiles, ba.key.fileIdx) &&
+				!fileInScope(inScopeFiles, bb.key.fileIdx) {
+				continue
+			}
+			// Skip same-file overlapping blocks.
+			if ba.key.fileIdx == bb.key.fileIdx {
+				dist := ba.key.pos - bb.key.pos
+				if dist < 0 {
+					dist = -dist
+				}
+				if dist < minTokens {
+					continue
+				}
+			}
+
+			evaluated++
+			sim := jaccardSimilarity(ba.miniSet, bb.miniSet)
+			if sim >= threshold && sim < 1.0 {
+				fuzzyMatches = append(fuzzyMatches, fuzzyClone{a, b, sim})
+			}
 		}
 	}
 
-	// Sort by similarity descending to prioritize best matches.
+	if capped {
+		helpers.Log.Warn().
+			Int("max_pairs", maxPairs).
+			Int("evaluated_pairs", evaluated).
+			Int("blocks_processed", cappedAt).
+			Int("total_blocks", len(blocks)).
+			Msg("type-3 detection capped by --max-pairs: results are PARTIAL (type-1/2 are complete; raise --max-pairs, lower --max-bucket, or set --similarity 1.0 for full type-3 coverage)")
+	}
+
+	// One aggregated warning if any bucket was truncated, so a hot codebase
+	// doesn't spam the log with hundreds of identical lines.
+	if truncationOccurred {
+		helpers.Log.Warn().
+			Int("max_bucket", maxBucket).
+			Msg("fuzzy bucket truncation: some near-miss clones may not be reported (raise --max-bucket to reduce)")
+	}
+
+	// Sort by similarity descending to prioritize best matches. The block
+	// indices (aIdx < bIdx, both deterministic) are used as tiebreakers so the
+	// ordering is total: without them, equal-similarity matches sort in an
+	// arbitrary order and the greedy dedup below keeps a different (random)
+	// subset of overlapping type-3 clones on every run.
 	sort.Slice(fuzzyMatches, func(i, j int) bool {
-		return fuzzyMatches[i].similarity > fuzzyMatches[j].similarity
+		a, b := fuzzyMatches[i], fuzzyMatches[j]
+		if a.similarity != b.similarity {
+			return a.similarity > b.similarity
+		}
+		if a.aIdx != b.aIdx {
+			return a.aIdx < b.aIdx
+		}
+		return a.bIdx < b.bIdx
 	})
 
 	// Deduplicate: mark blocks as used so overlapping pairs don't create duplicates.
@@ -566,14 +610,27 @@ func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) d
 }
 
 // jaccardSimilarity computes |A ∩ B| / |A ∪ B| for two hash sets.
-func jaccardSimilarity(a, b map[uint64]bool) float64 {
+// jaccardSimilarity computes |a∩b| / |a∪b| for two sorted, deduped hash
+// slices using a single linear two-pointer merge. This is both lighter and
+// faster than the previous map-based form: no per-probe hashing, and the
+// scans are sequential and cache-friendly — which matters because this is the
+// innermost loop, run once per candidate pair (millions of times on big repos).
+func jaccardSimilarity(a, b []uint64) float64 {
 	if len(a) == 0 && len(b) == 0 {
 		return 0
 	}
 	intersection := 0
-	for h := range a {
-		if b[h] {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] == b[j]:
 			intersection++
+			i++
+			j++
+		case a[i] < b[j]:
+			i++
+		default:
+			j++
 		}
 	}
 	union := len(a) + len(b) - intersection
@@ -581,6 +638,22 @@ func jaccardSimilarity(a, b map[uint64]bool) float64 {
 		return 0
 	}
 	return float64(intersection) / float64(union)
+}
+
+// sortDedupU64 sorts a hash slice ascending and removes adjacent duplicates in
+// place, turning a multiset into the set form jaccardSimilarity expects.
+func sortDedupU64(s []uint64) []uint64 {
+	if len(s) < 2 {
+		return s
+	}
+	slices.Sort(s)
+	out := s[:1]
+	for _, v := range s[1:] {
+		if v != out[len(out)-1] {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // windowInFunc returns true if all tokens in the window [pos, pos+size) are

@@ -72,7 +72,10 @@ Options:
   --dead-code          Detect likely-dead functions (heuristic only)
   --show-suppressed    Include suppressed clones in output (tagged [suppressed])
   --max-files          Hard cap on collected source files (0 = no cap); fail-fast safety net
-  --max-pairs          Hard cap on fuzzy candidate pairs (0 = no cap); fail-fast safety net
+  --max-pairs          Runaway backstop on fuzzy candidate pairs; past the limit, type-3
+                       detection stops and returns a partial result [default: 50000000, 0 = unlimited]
+  --scan-generated     Include machine-generated files (*.pb.go, @generated / "DO NOT EDIT"
+                       headers, etc.); skipped by default as they inflate duplication
   --exit-zero          Always exit 0 even when clones are found
   --config, -c         Path to config file (default: auto-discover .dupehound.yml)
   --verbose, -v        Enable verbose logging
@@ -112,10 +115,11 @@ SARIF output for GitHub Code Scanning:
 dupehound scan --format sarif --output results.sarif
 ```
 
-Exclude generated files:
+Generated files (`*.pb.go`, `@generated` / `DO NOT EDIT` headers, etc.) are skipped by
+default; pass `--scan-generated` to include them:
 
 ```sh
-dupehound scan --exclude "**/*.pb.go" --exclude "**/*.gen.go"
+dupehound scan --scan-generated
 ```
 
 Scan only Python files:

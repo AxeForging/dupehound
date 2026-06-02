@@ -52,7 +52,10 @@ func sortClonesByImpact(clones []domain.Clone) []domain.Clone {
 		if impactI != impactJ {
 			return impactI > impactJ
 		}
-		return sorted[i].TokenCount > sorted[j].TokenCount
+		if sorted[i].TokenCount != sorted[j].TokenCount {
+			return sorted[i].TokenCount > sorted[j].TokenCount
+		}
+		return sorted[i].Hash < sorted[j].Hash // total order for stable output
 	})
 	return sorted
 }

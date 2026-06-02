@@ -131,8 +131,13 @@ var maxFilesFlag = cli.IntFlag{
 	Usage: "Hard cap on the number of source files to scan (0 = no cap); fail fast on runaway trees",
 }
 
+var scanGeneratedFlag = cli.BoolFlag{
+	Name:  "scan-generated",
+	Usage: "Include machine-generated files (*.pb.go, *_gen.go, 'DO NOT EDIT' headers, etc.); skipped by default as they inflate duplication",
+}
+
 var maxPairsFlag = cli.IntFlag{
 	Name:  "max-pairs",
-	Value: 0,
-	Usage: "Hard cap on fuzzy candidate pairs (0 = no cap); fail fast before allocating large dedup maps",
+	Value: 50000000,
+	Usage: "Runaway backstop: cap type-3 detection past this many fuzzy candidate pairs, returning partial results (default 50M; 0 = unlimited). Guards CPU time on pathological inputs",
 }

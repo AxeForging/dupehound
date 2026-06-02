@@ -35,6 +35,7 @@ file_naming_pattern:
     - "*.txt"
     - "*.gif"
     - "*.png"
+    - "*.sh"
   disallowed:
     - "*.env*"
     - ".env*"

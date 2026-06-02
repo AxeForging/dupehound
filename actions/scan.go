@@ -89,9 +89,11 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if c.IsSet("max-files") {
 		opts.MaxFiles = c.Int("max-files")
 	}
-	if c.IsSet("max-pairs") {
-		opts.MaxPairs = c.Int("max-pairs")
-	}
+	// Always read max-pairs so its armed default (50M runaway backstop) applies
+	// even when the user doesn't pass the flag. An explicit --max-pairs 0 still
+	// means "unlimited" for anyone who wants it.
+	opts.MaxPairs = c.Int("max-pairs")
+	opts.ScanGenerated = c.Bool("scan-generated")
 
 	services.ApplyConfigDefaults(&opts, cfg)
 

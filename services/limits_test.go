@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
 )
 
@@ -88,65 +89,79 @@ func TestScanner_MaxFiles_AtBoundary(t *testing.T) {
 	}
 }
 
-// TestDetector_MaxPairs_AbortsFuzzy is the feature test for the --max-pairs
-// safety net: when the candidate pair count would exceed the cap, the fuzzy
-// detector must abort and return whatever exact clones it already had,
-// rather than blowing memory on a giant dedup map.
+// TestDetector_MaxPairs_CapsFuzzyGracefully is the feature test for the
+// --max-pairs runaway backstop. When the candidate pair count exceeds the cap,
+// type-3 detection stops at the next block boundary and returns the matches
+// found so far — a deterministic PARTIAL result — rather than discarding all
+// type-3 work. Type-1/2 clones are always complete.
 //
-// We construct a many-file scenario where the fuzzy detector would normally
-// build many candidate pairs, then assert that with a tight cap the result
-// drops to exact-only (the fuzzy result must be empty).
-func TestDetector_MaxPairs_AbortsFuzzy(t *testing.T) {
-	lang := LangForName("go")
-	if lang == nil {
-		t.Fatal("go language not registered")
+// We construct a many-file near-duplicate corpus (lots of fuzzy candidate
+// pairs), then assert that a tight cap yields a deterministic, strict subset of
+// the uncapped result instead of either crashing or blacking out all type-3.
+func TestDetector_MaxPairs_CapsFuzzyGracefully(t *testing.T) {
+	// 8 near-miss functions with identical structure except for two scattered
+	// operator flips per file. Operators are distinct token kinds (not
+	// identifiers or literals), so they survive normalization and stop the
+	// files from collapsing into exact type-2 clones; scattering them ensures
+	// no full window is exact-covered, so the divergent windows fall to the
+	// fuzzy (type-3) path and generate many overlapping candidate pairs.
+	const minTokens = 20
+	const minSim = 0.6
+	var files []TokenizedFile
+	for i := 0; i < 8; i++ {
+		ops := []string{"+", "+", "+", "+", "+", "+", "+", "+", "+", "+", "+", "+"}
+		ops[i%len(ops)] = "-"
+		ops[(i*2+3)%len(ops)] = "*"
+		var sb strings.Builder
+		sb.WriteString("package main\nfunc calc(items []int) int {\n\tacc := 0\n\tfor _, item := range items {\n")
+		for _, op := range ops {
+			fmt.Fprintf(&sb, "\t\tacc = acc %s item\n", op)
+		}
+		sb.WriteString("\t}\n\treturn acc\n}\n")
+		files = append(files, makeFile(fmt.Sprintf("f%d.go", i), sb.String()))
 	}
 
-	// 8 files, all near-duplicates → many fuzzy candidate pairs.
-	files := make([]TokenizedFile, 8)
-	for i := range files {
-		// Slightly different middle line per file so they're near-misses, not exact.
-		content := fmt.Sprintf(`package main
-func handler%d() int {
-	x := compute()
-	y := validate(x)
-	z := transform(y)
-	w := persist(z)
-	q := decorate%d(w)
-	notify(q)
-	return q
-}
-`, i, i)
-		files[i] = BuildTokenizedFile(fmt.Sprintf("/f%d.go", i), content, lang)
-	}
-
-	// Baseline: no pair cap.
+	// Baseline: no pair cap → full type-3 coverage.
 	baseline := DetectWithOptions(files, DetectOptions{
-		MinTokens:     10,
-		MinSimilarity: 0.6,
+		MinTokens:     minTokens,
+		MinSimilarity: minSim,
 	})
+	baseT3 := countType3(baseline)
+	if baseT3 == 0 {
+		t.Fatal("fixture produced no type-3 clones; it no longer exercises the cap")
+	}
 
-	// Capped: pair cap = 1, which is virtually guaranteed to trip on the
-	// first emitted pair. The fuzzy half must abort and return only the
-	// exact clones (zero in this corpus, since no two files are identical).
-	capped := DetectWithOptions(files, DetectOptions{
-		MinTokens:     10,
-		MinSimilarity: 0.6,
-		MaxPairs:      1,
-	})
+	// Capped: pair cap = 1 trips almost immediately, so detection stops after
+	// the first block's worth of pairs.
+	opts := DetectOptions{MinTokens: minTokens, MinSimilarity: minSim, MaxPairs: 1}
+	capped := DetectWithOptions(files, opts)
 
-	// The cap result must be a strict (or equal) subset of the baseline.
-	// In our corpus the cap will produce 0 (no exact clones) while the
-	// baseline may produce some fuzzy clones.
+	// 1. Partial, not a blackout, not more than baseline.
 	if len(capped) > len(baseline) {
 		t.Errorf("cap returned MORE clones than baseline: capped=%d baseline=%d", len(capped), len(baseline))
 	}
-	// And no clone in the capped result may be a fuzzy (type-3) one.
-	for _, c := range capped {
-		if c.Type == "type-3" {
-			t.Errorf("MaxPairs=1 should have aborted fuzzy detection but a type-3 clone was returned: %+v", c)
+	if cappedT3 := countType3(capped); cappedT3 >= baseT3 {
+		t.Errorf("cap did not reduce type-3: capped=%d baseline=%d (expected a partial subset)", cappedT3, baseT3)
+	}
+
+	// 2. The partial result must be deterministic across runs — the whole point
+	// of cutting on a block boundary rather than mid-block.
+	first := fingerprint(capped)
+	for run := 1; run < 10; run++ {
+		if got := fingerprint(DetectWithOptions(files, opts)); got != first {
+			t.Fatalf("capped result is non-deterministic\nrun 0:\n%s\nrun %d:\n%s", first, run, got)
 		}
 	}
+}
+
+func countType3(clones []domain.Clone) int {
+	n := 0
+	for _, c := range clones {
+		if c.Type == domain.CloneType3 {
+			n++
+		}
+	}
+	return n
 }
 
 // TestDetector_MaxPairs_Zero is the regression guard: MaxPairs=0 must mean
