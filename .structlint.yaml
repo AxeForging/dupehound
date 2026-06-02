@@ -34,6 +34,9 @@ file_naming_pattern:
     - ".github/**"
     - "*.txt"
     - "*.gif"
+    - "*.png"
+    - "*.sh"
+    - "*.golden"
   disallowed:
     - "*.env*"
     - ".env*"

@@ -1,0 +1,235 @@
+## dupehound scan results
+
+> Scanning diff since: **origin/main** (17 files changed)
+
+| Metric | Value |
+|--------|-------|
+| Files scanned | 17 / 20 |
+| Skipped (binary) | 2 |
+| Total lines | 3714 |
+| Clones found | 14 (1 suppressed) |
+| Duplicate lines | 197 (5.3%) |
+| New clones since origin/main | 3 |
+| Breakdown | 1 type-1, 13 type-2 |
+
+### Hotspots
+
+| Dup % | Dup Lines | Total Lines | File |
+|------:|----------:|------------:|------|
+| 25.0% | 120 | 500 | `pkg/filea.go` |
+| 24.0% | 112 | 490 | `pkg/fileb.go` |
+| 23.0% | 104 | 480 | `pkg/filec.go` |
+| 22.0% | 96 | 470 | `pkg/filed.go` |
+| 21.0% | 88 | 460 | `pkg/filee.go` |
+| 20.0% | 80 | 450 | `pkg/filef.go` |
+| 19.0% | 72 | 440 | `pkg/fileg.go` |
+| 18.0% | 64 | 430 | `pkg/fileh.go` |
+| 17.0% | 56 | 420 | `pkg/filei.go` |
+| 16.0% | 48 | 410 | `pkg/filej.go` |
+
+<details>
+<summary>2 more files...</summary>
+
+| Dup % | Dup Lines | Total Lines | File |
+|------:|----------:|------------:|------|
+| 15.0% | 40 | 400 | `pkg/filek.go` |
+| 14.0% | 32 | 390 | `pkg/filel.go` |
+
+</details>
+
+### Test↔Prod clones
+
+<details>
+<summary>#1 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 18 lines &nbsp; 2 instances &nbsp; 🧪 test↔prod</summary>
+
+**Locations:**
+- `svc/user.go:10-27`
+- `svc/user_test.go:40-57`
+
+**Preview:**
+```go
+func A() {
+  do()
+}
+```
+
+</details>
+
+
+### Top clones (by impact)
+
+<details>
+<summary>#1 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 30 lines &nbsp; 2 instances</summary>
+
+**Locations:**
+- `pkg/f.go:100-130`
+- `pkg/g.go:200-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#2 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 29 lines &nbsp; 2 instances &nbsp; 🔥 churn 1</summary>
+
+**Locations:**
+- `pkg/f.go:101-130`
+- `pkg/g.go:201-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#3 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 28 lines &nbsp; 2 instances &nbsp; 🔥 churn 2</summary>
+
+**Locations:**
+- `pkg/f.go:102-130`
+- `pkg/g.go:202-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#4 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 27 lines &nbsp; 2 instances &nbsp; 🔥 churn 3</summary>
+
+**Locations:**
+- `pkg/f.go:103-130`
+- `pkg/g.go:203-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#5 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 26 lines &nbsp; 2 instances &nbsp; 🔥 churn 4</summary>
+
+**Locations:**
+- `pkg/f.go:104-130`
+- `pkg/g.go:204-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#6 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 25 lines &nbsp; 2 instances &nbsp; 🔥 churn 5</summary>
+
+**Locations:**
+- `pkg/f.go:105-130`
+- `pkg/g.go:205-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#7 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 24 lines &nbsp; 2 instances &nbsp; 🔥 churn 6</summary>
+
+**Locations:**
+- `pkg/f.go:106-130`
+- `pkg/g.go:206-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#8 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 23 lines &nbsp; 2 instances &nbsp; 🔥 churn 7</summary>
+
+**Locations:**
+- `pkg/f.go:107-130`
+- `pkg/g.go:207-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#9 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 22 lines &nbsp; 2 instances &nbsp; 🔥 churn 8</summary>
+
+**Locations:**
+- `pkg/f.go:108-130`
+- `pkg/g.go:208-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+<details>
+<summary>#10 &nbsp; <code>type-2</code> &nbsp; similarity: 1.00 &nbsp; 21 lines &nbsp; 2 instances &nbsp; 🔥 churn 9</summary>
+
+**Locations:**
+- `pkg/f.go:109-130`
+- `pkg/g.go:209-230`
+
+**Preview:**
+```go
+x := 1
+y := 2
+```
+
+</details>
+
+
+> 2 more clones not shown. Run `dupehound scan --verbose` or `--top 0` for full results.
+
+### Dead functions (12)
+
+> **Note:** dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.
+
+- `pkg/dead.go:10` — `unusedA`
+- `pkg/dead.go:11` — `unusedB`
+- `pkg/dead.go:12` — `unusedC`
+- `pkg/dead.go:13` — `unusedD`
+- `pkg/dead.go:14` — `unusedE`
+- `pkg/dead.go:15` — `unusedF`
+- `pkg/dead.go:16` — `unusedG`
+- `pkg/dead.go:17` — `unusedH`
+- `pkg/dead.go:18` — `unusedI`
+- `pkg/dead.go:19` — `unusedJ`
+
+<details>
+<summary>2 more dead functions...</summary>
+
+- `pkg/dead.go:20` — `unusedK`
+- `pkg/dead.go:21` — `unusedL`
+
+</details>

@@ -52,7 +52,10 @@ func sortClonesByImpact(clones []domain.Clone) []domain.Clone {
 		if impactI != impactJ {
 			return impactI > impactJ
 		}
-		return sorted[i].TokenCount > sorted[j].TokenCount
+		if sorted[i].TokenCount != sorted[j].TokenCount {
+			return sorted[i].TokenCount > sorted[j].TokenCount
+		}
+		return sorted[i].Hash < sorted[j].Hash // total order for stable output
 	})
 	return sorted
 }
@@ -134,6 +137,70 @@ func writeClonesMdSection(b *strings.Builder, clones []domain.Clone, opts Format
 	}
 }
 
+// metricRow is one row of the summary block. The text and markdown formatters
+// emit the same rows under the same conditions but with different label text
+// and layout, so each row carries both pre-rendered forms. Centralizing the
+// "which rows, in what order, under what condition" decision here keeps the two
+// formatters from drifting and removes what was a near-identical block
+// duplicated across formatText and formatMarkdown.
+type metricRow struct {
+	text string // full text line, sans newline: "Files scanned : 17 / 17"
+	md   string // markdown "label | value", rendered as a "| %s |" table row
+}
+
+// summaryRows builds the report's summary metrics once for both formatters.
+func summaryRows(r *domain.Report) []metricRow {
+	rows := []metricRow{{
+		text: fmt.Sprintf("Files scanned : %d / %d", r.ScannedFiles, r.TotalFiles),
+		md:   fmt.Sprintf("Files scanned | %d / %d", r.ScannedFiles, r.TotalFiles),
+	}}
+	if r.SkippedFiles > 0 {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("Skipped files : %d (binary)", r.SkippedFiles),
+			md:   fmt.Sprintf("Skipped (binary) | %d", r.SkippedFiles),
+		})
+	}
+	rows = append(rows, metricRow{
+		text: fmt.Sprintf("Total lines   : %d", r.TotalLines),
+		md:   fmt.Sprintf("Total lines | %d", r.TotalLines),
+	})
+	if r.SuppressedClones > 0 {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("Clones found  : %d (%d suppressed)", r.TotalClones, r.SuppressedClones),
+			md:   fmt.Sprintf("Clones found | %d (%d suppressed)", r.TotalClones, r.SuppressedClones),
+		})
+	} else {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("Clones found  : %d", r.TotalClones),
+			md:   fmt.Sprintf("Clones found | %d", r.TotalClones),
+		})
+	}
+	rows = append(rows, metricRow{
+		text: fmt.Sprintf("Duplicate lines: %d (%.1f%%)", r.DuplicateLines, r.DuplicationPct),
+		md:   fmt.Sprintf("Duplicate lines | %d (%.1f%%)", r.DuplicateLines, r.DuplicationPct),
+	})
+	if r.SinceDiffRef != "" {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("New clones    : %d since %s", len(r.NewClones), r.SinceDiffRef),
+			md:   fmt.Sprintf("New clones since %s | %d", r.SinceDiffRef, len(r.NewClones)),
+		})
+	}
+	return rows
+}
+
+// sortedPartition is the shared first step of both clone sections: sort by
+// impact, then split into test↔prod and normal (honoring suppression).
+func sortedPartition(r *domain.Report, opts FormatOptions) (testProd, normal []domain.Clone) {
+	return partitionClones(sortClonesByImpact(r.Clones), opts.ShowSuppressed)
+}
+
+// deadFuncsShown returns the capped slice of dead functions to display and the
+// count hidden by the cap — the selection logic both formatters share.
+func deadFuncsShown(r *domain.Report, opts FormatOptions) (shown []domain.DeadFunc, overflow int) {
+	limit := topNWithOpt(len(r.DeadFunctions), opts)
+	return r.DeadFunctions[:limit], len(r.DeadFunctions) - limit
+}
+
 func relPath(absPath, basePath string) string {
 	if basePath == "" {
 		return absPath
@@ -155,20 +222,8 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 	if report.SinceDiffRef != "" {
 		fmt.Fprintf(&b, "Scanning diff  : since %s  (%d files changed)\n", report.SinceDiffRef, report.SinceDiffFiles)
 	}
-	fmt.Fprintf(&b, "Files scanned : %d / %d\n", report.ScannedFiles, report.TotalFiles)
-	if report.SkippedFiles > 0 {
-		fmt.Fprintf(&b, "Skipped files : %d (binary)\n", report.SkippedFiles)
-	}
-	fmt.Fprintf(&b, "Total lines   : %d\n", report.TotalLines)
-	if report.SuppressedClones > 0 {
-		fmt.Fprintf(&b, "Clones found  : %d (%d suppressed)\n", report.TotalClones, report.SuppressedClones)
-	} else {
-		fmt.Fprintf(&b, "Clones found  : %d\n", report.TotalClones)
-	}
-	fmt.Fprintf(&b, "Duplicate lines: %d (%.1f%%)\n", report.DuplicateLines, report.DuplicationPct)
-
-	if report.SinceDiffRef != "" {
-		fmt.Fprintf(&b, "New clones    : %d since %s\n", len(report.NewClones), report.SinceDiffRef)
+	for _, row := range summaryRows(report) {
+		fmt.Fprintf(&b, "%s\n", row.text)
 	}
 
 	if report.TotalClones == 0 && len(report.DeadFunctions) == 0 {
@@ -194,7 +249,7 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 	}
 
 	if report.TotalClones > 0 {
-		testProdClones, normalClones := partitionClones(sortClonesByImpact(report.Clones), opts.ShowSuppressed)
+		testProdClones, normalClones := sortedPartition(report, opts)
 
 		if len(testProdClones) > 0 {
 			fmt.Fprintf(&b, "\nTest↔Prod clones (span test and production files):\n")
@@ -207,15 +262,14 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 
 	// Dead function report.
 	if len(report.DeadFunctions) > 0 {
+		shown, overflow := deadFuncsShown(report, opts)
 		fmt.Fprintf(&b, "\nDead functions : %d\n", len(report.DeadFunctions))
 		fmt.Fprintf(&b, "Note: dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.\n")
-		dfLimit := topNWithOpt(len(report.DeadFunctions), opts)
-		for i := 0; i < dfLimit; i++ {
-			df := report.DeadFunctions[i]
+		for _, df := range shown {
 			fmt.Fprintf(&b, "  %s:%d\t%s\n", relPath(df.File, opts.ScanPath), df.Line, df.Name)
 		}
-		if len(report.DeadFunctions) > dfLimit {
-			fmt.Fprintf(&b, "  ... %d more (use --verbose or --top 0 to show all)\n", len(report.DeadFunctions)-dfLimit)
+		if overflow > 0 {
+			fmt.Fprintf(&b, "  ... %d more (use --verbose or --top 0 to show all)\n", overflow)
 		}
 	}
 
@@ -291,19 +345,8 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	}
 	fmt.Fprintf(&b, "| Metric | Value |\n")
 	fmt.Fprintf(&b, "|--------|-------|\n")
-	fmt.Fprintf(&b, "| Files scanned | %d / %d |\n", report.ScannedFiles, report.TotalFiles)
-	if report.SkippedFiles > 0 {
-		fmt.Fprintf(&b, "| Skipped (binary) | %d |\n", report.SkippedFiles)
-	}
-	fmt.Fprintf(&b, "| Total lines | %d |\n", report.TotalLines)
-	if report.SuppressedClones > 0 {
-		fmt.Fprintf(&b, "| Clones found | %d (%d suppressed) |\n", report.TotalClones, report.SuppressedClones)
-	} else {
-		fmt.Fprintf(&b, "| Clones found | %d |\n", report.TotalClones)
-	}
-	fmt.Fprintf(&b, "| Duplicate lines | %d (%.1f%%) |\n", report.DuplicateLines, report.DuplicationPct)
-	if report.SinceDiffRef != "" {
-		fmt.Fprintf(&b, "| New clones since %s | %d |\n", report.SinceDiffRef, len(report.NewClones))
+	for _, row := range summaryRows(report) {
+		fmt.Fprintf(&b, "| %s |\n", row.md)
 	}
 
 	if report.TotalClones == 0 && len(report.DeadFunctions) == 0 {
@@ -343,7 +386,7 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 
 	// --- Test↔Prod / Top clones (only when clones exist) ---
 	if report.TotalClones > 0 {
-		testProdClones, normalClones := partitionClones(sortClonesByImpact(report.Clones), opts.ShowSuppressed)
+		testProdClones, normalClones := sortedPartition(report, opts)
 
 		if len(testProdClones) > 0 {
 			fmt.Fprintf(&b, "\n### Test↔Prod clones\n\n")
@@ -356,18 +399,19 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 
 	// --- Dead functions (capped to top-N, overflow in <details>) ---
 	if len(report.DeadFunctions) > 0 {
-		fmt.Fprintf(&b, "\n### Dead functions (%d)\n\n", len(report.DeadFunctions))
-		fmt.Fprintf(&b, "> **Note:** dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.\n\n")
-		dfLimit := topNWithOpt(len(report.DeadFunctions), opts)
-		for i := 0; i < dfLimit; i++ {
-			df := report.DeadFunctions[i]
+		shown, overflow := deadFuncsShown(report, opts)
+		writeDeadFunc := func(df domain.DeadFunc) {
 			fmt.Fprintf(&b, "- `%s:%d` — `%s`\n", relPath(df.File, opts.ScanPath), df.Line, df.Name)
 		}
-		if len(report.DeadFunctions) > dfLimit {
-			fmt.Fprintf(&b, "\n<details>\n<summary>%d more dead functions...</summary>\n\n", len(report.DeadFunctions)-dfLimit)
-			for i := dfLimit; i < len(report.DeadFunctions); i++ {
-				df := report.DeadFunctions[i]
-				fmt.Fprintf(&b, "- `%s:%d` — `%s`\n", relPath(df.File, opts.ScanPath), df.Line, df.Name)
+		fmt.Fprintf(&b, "\n### Dead functions (%d)\n\n", len(report.DeadFunctions))
+		fmt.Fprintf(&b, "> **Note:** dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.\n\n")
+		for _, df := range shown {
+			writeDeadFunc(df)
+		}
+		if overflow > 0 {
+			fmt.Fprintf(&b, "\n<details>\n<summary>%d more dead functions...</summary>\n\n", overflow)
+			for _, df := range report.DeadFunctions[len(shown):] {
+				writeDeadFunc(df)
 			}
 			fmt.Fprintf(&b, "\n</details>\n")
 		}

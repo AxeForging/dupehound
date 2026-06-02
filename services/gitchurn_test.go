@@ -251,6 +251,7 @@ func handler() int {
 	}
 	if target == nil {
 		t.Fatal("expected a clone spanning both a.go and b.go")
+		return // unreachable; quiets staticcheck SA5011 nil-deref analysis below
 	}
 
 	// Per-instance assertions: a.go was touched 4 times, b.go was touched 1 time.

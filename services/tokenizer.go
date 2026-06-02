@@ -221,6 +221,64 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 			}
 		}
 
+		// C# string prefixes: @"..." (verbatim), $"..." (interpolated), and the
+		// combinations $@"..." / @$"...". In a verbatim string a backslash is a
+		// literal character and a quote is escaped by doubling it (""), so the
+		// generic `\`-escape handling below would mis-lex `@"C:\dir\"` and
+		// swallow the following code. Handle these forms explicitly.
+		if lang.Name == "csharp" && (ch == '@' || ch == '$') {
+			p := pos
+			verbatim := false
+			for p < n && (src[p] == '@' || src[p] == '$') {
+				if src[p] == '@' {
+					verbatim = true
+				}
+				p++
+			}
+			if p < n && src[p] == '"' {
+				start := pos
+				startLine := line
+				p++ // past the opening quote
+				if verbatim {
+					for p < n {
+						if src[p] == '"' {
+							if p+1 < n && src[p+1] == '"' {
+								p += 2 // "" is an escaped quote inside a verbatim string
+								continue
+							}
+							p++ // closing quote
+							break
+						}
+						if src[p] == '\n' {
+							line++ // verbatim strings may span lines
+						}
+						p++
+					}
+				} else {
+					for p < n {
+						c := src[p]
+						if c == '\\' {
+							p += 2
+							continue
+						}
+						if c == '"' {
+							p++
+							break
+						}
+						if c == '\n' {
+							break // non-verbatim strings do not span lines
+						}
+						p++
+					}
+				}
+				tokens = append(tokens, Token{Kind: TokString, OrigText: src[start:p], Line: startLine})
+				pos = p
+				continue
+			}
+			// Not a string prefix (e.g. a verbatim identifier `@class`) — fall
+			// through and let the normal operator/identifier path handle it.
+		}
+
 		// String and character literals.
 		if ch == '"' || ch == '\'' || ch == '`' {
 			start := pos
@@ -273,6 +331,22 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 				tokens = append(tokens, Token{Kind: TokIdent, OrigText: word, Line: line})
 			}
 			continue
+		}
+
+		// JavaScript / TypeScript regex literals. A `/` here is not a comment
+		// (those are handled above), so it is either a division operator or the
+		// start of a regex literal. We disambiguate with the standard
+		// "expression vs value" heuristic: a regex is expected unless the
+		// previous token produced a value. Without this, `/foo/.test(x)` lexes
+		// as a chain of division operators and mangles the token stream.
+		if (lang.Name == "javascript" || lang.Name == "typescript") && ch == '/' {
+			if jsRegexExpected(tokens) {
+				if end := scanJSRegex(src, pos, n); end > pos {
+					tokens = append(tokens, Token{Kind: TokString, OrigText: src[pos:end], Line: line})
+					pos = end
+					continue
+				}
+			}
 		}
 
 		// Three-character operators (check before two-char).
@@ -587,6 +661,8 @@ func markFunctionBodies(tokens []Token, lang *domain.Language) []bool {
 	}
 
 	switch lang.Name {
+	case "javascript", "typescript":
+		markJSFunctions(tokens, inFunc)
 	case "python":
 		markPythonFunctions(tokens, inFunc)
 	case "ruby":
@@ -675,6 +751,211 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
 			}
 		}
 	}
+}
+
+// jsControlKeywords are keywords that take a `(...)` and a `{ }` block but are
+// NOT function definitions. Used to distinguish `if (x) {` from `compute(x) {`.
+var jsControlKeywords = map[string]bool{
+	"if": true, "for": true, "while": true, "switch": true,
+	"catch": true, "with": true,
+}
+
+// markJSFunctions marks JavaScript/TypeScript function and method bodies.
+//
+// Unlike the generic func-keyword scanner, JS/TS routinely define logic in
+// forms that have no `function` keyword: class/object methods (`compute() {`),
+// arrow functions (`(x) => {`), getters/setters, and constructors. Restricting
+// detection to `function` bodies hid all of those from clone detection.
+//
+// A `{` opens a function body when:
+//   - it is immediately preceded by `=>` (arrow function body), or
+//   - it follows a `)` (optionally with a TS return-type annotation `): T` in
+//     between) whose matching `(` is NOT introduced by a control-flow keyword
+//     (if/for/while/switch/catch/with).
+//
+// Object literals (`= {`), class/interface bodies (`class C {`), and type
+// aliases are not preceded by `)`/`=>`, so they remain excluded.
+func markJSFunctions(tokens []Token, inFunc []bool) {
+	n := len(tokens)
+	for i := 0; i < n; i++ {
+		t := tokens[i]
+		if t.Kind != TokOperator {
+			continue
+		}
+		bodyIdx := -1
+		switch t.Text {
+		case "=>":
+			// Arrow function body: `=> {`.
+			if i+1 < n && isOpenBrace(tokens[i+1]) {
+				bodyIdx = i + 1
+			}
+		case ")":
+			if b := jsFindBodyBrace(tokens, i); b >= 0 && jsParenIsFunctionParams(tokens, i) {
+				bodyIdx = b
+			}
+		}
+		if bodyIdx >= 0 {
+			markBraceBody(tokens, inFunc, bodyIdx)
+		}
+	}
+}
+
+// isOpenBrace reports whether tok is a `{` operator.
+func isOpenBrace(tok Token) bool {
+	return tok.Kind == TokOperator && tok.Text == "{"
+}
+
+// markBraceBody marks every token strictly inside the balanced `{ }` pair that
+// opens at braceIdx as in-function. The braces themselves are not marked.
+func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) {
+	n := len(tokens)
+	depth := 1
+	for j := braceIdx + 1; j < n && depth > 0; j++ {
+		if tokens[j].Kind == TokOperator {
+			switch tokens[j].Text {
+			case "{":
+				depth++
+			case "}":
+				depth--
+			}
+		}
+		if depth > 0 {
+			inFunc[j] = true
+		}
+	}
+}
+
+// jsFindBodyBrace returns the index of the `{` that opens the body following the
+// `)` at closeParen, or -1 if no body brace follows. A TS return-type annotation
+// (`): Foo`, `): Promise<T>`, `): A | B`, `): Foo[]`, …) between the `)` and the
+// `{` is skipped. Returns -1 for signatures with no body (`foo(): void;`).
+func jsFindBodyBrace(tokens []Token, closeParen int) int {
+	n := len(tokens)
+	j := closeParen + 1
+	if j >= n {
+		return -1
+	}
+	if tokens[j].Kind == TokOperator && tokens[j].Text == ":" {
+		// Skip the return-type annotation up to the body brace.
+		for j++; j < n; j++ {
+			tk := tokens[j]
+			if tk.Kind != TokOperator {
+				continue
+			}
+			switch tk.Text {
+			case "{":
+				return j
+			case ";", "=", "}", "=>":
+				return -1
+			}
+		}
+		return -1
+	}
+	if tokens[j].Kind == TokOperator && tokens[j].Text == "{" {
+		return j
+	}
+	return -1
+}
+
+// jsParenIsFunctionParams reports whether the `)` at closeParen closes a function
+// parameter list (as opposed to a control-flow condition such as `if (...)`). It
+// finds the matching `(` and rejects it when introduced by a control keyword.
+func jsParenIsFunctionParams(tokens []Token, closeParen int) bool {
+	depth := 1
+	open := -1
+	for k := closeParen - 1; k >= 0; k-- {
+		if tokens[k].Kind != TokOperator {
+			continue
+		}
+		switch tokens[k].Text {
+		case ")":
+			depth++
+		case "(":
+			depth--
+			if depth == 0 {
+				open = k
+			}
+		}
+		if open >= 0 {
+			break
+		}
+	}
+	if open < 0 {
+		return false
+	}
+	if open == 0 {
+		return true // `(...) {` at file start — treat as a function.
+	}
+	before := tokens[open-1]
+	if before.Kind == TokKeyword && jsControlKeywords[before.Text] {
+		return false
+	}
+	return true
+}
+
+// jsRegexExpected reports whether a `/` at the current position should be read
+// as the start of a regex literal rather than a division operator, based on the
+// previously emitted token. A regex is expected at the start of an expression
+// (after operators, keywords, `(`, `,`, `=`, …) but not after a value (an
+// identifier, literal, `)`, `]`, or a postfix `++`/`--`).
+func jsRegexExpected(tokens []Token) bool {
+	if len(tokens) == 0 {
+		return true
+	}
+	prev := tokens[len(tokens)-1]
+	switch prev.Kind {
+	case TokIdent, TokNumber, TokString:
+		return false
+	case TokKeyword:
+		switch prev.Text {
+		case "this", "super", "true", "false", "null":
+			return false
+		}
+		return true
+	case TokOperator:
+		switch prev.Text {
+		case ")", "]", "++", "--":
+			return false
+		}
+		return true
+	}
+	return true
+}
+
+// scanJSRegex scans a JavaScript/TypeScript regex literal starting at src[pos]
+// (which must be `/`) and returns the index just past the closing `/` and any
+// trailing flags. A `/` inside a character class `[...]` does not terminate the
+// regex. Returns pos unchanged if the literal is unterminated on the line (in
+// which case the caller falls back to treating `/` as a division operator).
+func scanJSRegex(src string, pos, n int) int {
+	i := pos + 1
+	inClass := false
+	for i < n {
+		c := src[i]
+		if c == '\n' {
+			return pos // unterminated — not a regex
+		}
+		if c == '\\' {
+			i += 2 // escaped char (e.g. \/ or \[)
+			continue
+		}
+		switch c {
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '/':
+			if !inClass {
+				i++ // closing slash
+				for i < n && isLetter(src[i]) {
+					i++ // regex flags
+				}
+				return i
+			}
+		}
+		i++
+	}
+	return pos // unterminated
 }
 
 // markPythonFunctions marks tokens after `def name(...):` as in-function.

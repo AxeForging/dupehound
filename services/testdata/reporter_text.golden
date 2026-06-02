@@ -1,0 +1,110 @@
+dupehound scan results
+======================
+Scanning diff  : since origin/main  (17 files changed)
+Files scanned : 17 / 20
+Skipped files : 2 (binary)
+Total lines   : 3714
+Clones found  : 14 (1 suppressed)
+Duplicate lines: 197 (5.3%)
+New clones    : 3 since origin/main
+Breakdown     : 1 type-1, 13 type-2
+
+Hotspots (files by duplication %):
+   25.0%   120/ 500 lines  pkg/filea.go
+   24.0%   112/ 490 lines  pkg/fileb.go
+   23.0%   104/ 480 lines  pkg/filec.go
+   22.0%    96/ 470 lines  pkg/filed.go
+   21.0%    88/ 460 lines  pkg/filee.go
+   20.0%    80/ 450 lines  pkg/filef.go
+   19.0%    72/ 440 lines  pkg/fileg.go
+   18.0%    64/ 430 lines  pkg/fileh.go
+   17.0%    56/ 420 lines  pkg/filei.go
+   16.0%    48/ 410 lines  pkg/filej.go
+  ... 2 more files (use --verbose to show all)
+
+Test↔Prod clones (span test and production files):
+  #1    type-2  similarity: 1.00  18 lines  120 tokens  2 instances [test↔prod]
+        svc/user.go:10-27
+        svc/user_test.go:40-57
+        | func A() {
+        |   do()
+        | }
+
+
+Top clones (by impact):
+  #1    type-2  similarity: 1.00  30 lines  200 tokens  2 instances
+        pkg/f.go:100-130
+        pkg/g.go:200-230
+        | x := 1
+        | y := 2
+
+  #2    type-2  similarity: 1.00  29 lines  195 tokens  2 instances [churn: 1 commits]
+        pkg/f.go:101-130
+        pkg/g.go:201-230
+        | x := 1
+        | y := 2
+
+  #3    type-2  similarity: 1.00  28 lines  190 tokens  2 instances [churn: 2 commits]
+        pkg/f.go:102-130
+        pkg/g.go:202-230
+        | x := 1
+        | y := 2
+
+  #4    type-2  similarity: 1.00  27 lines  185 tokens  2 instances [churn: 3 commits]
+        pkg/f.go:103-130
+        pkg/g.go:203-230
+        | x := 1
+        | y := 2
+
+  #5    type-2  similarity: 1.00  26 lines  180 tokens  2 instances [churn: 4 commits]
+        pkg/f.go:104-130
+        pkg/g.go:204-230
+        | x := 1
+        | y := 2
+
+  #6    type-2  similarity: 1.00  25 lines  175 tokens  2 instances [churn: 5 commits]
+        pkg/f.go:105-130
+        pkg/g.go:205-230
+        | x := 1
+        | y := 2
+
+  #7    type-2  similarity: 1.00  24 lines  170 tokens  2 instances [churn: 6 commits]
+        pkg/f.go:106-130
+        pkg/g.go:206-230
+        | x := 1
+        | y := 2
+
+  #8    type-2  similarity: 1.00  23 lines  165 tokens  2 instances [churn: 7 commits]
+        pkg/f.go:107-130
+        pkg/g.go:207-230
+        | x := 1
+        | y := 2
+
+  #9    type-2  similarity: 1.00  22 lines  160 tokens  2 instances [churn: 8 commits]
+        pkg/f.go:108-130
+        pkg/g.go:208-230
+        | x := 1
+        | y := 2
+
+  #10   type-2  similarity: 1.00  21 lines  155 tokens  2 instances [churn: 9 commits]
+        pkg/f.go:109-130
+        pkg/g.go:209-230
+        | x := 1
+        | y := 2
+
+  ... 2 more clones (use --verbose or --top 0 to show all)
+
+
+Dead functions : 12
+Note: dead function detection is a heuristic. Cross-package calls, reflection, and interface implementations may produce false positives.
+  pkg/dead.go:10	unusedA
+  pkg/dead.go:11	unusedB
+  pkg/dead.go:12	unusedC
+  pkg/dead.go:13	unusedD
+  pkg/dead.go:14	unusedE
+  pkg/dead.go:15	unusedF
+  pkg/dead.go:16	unusedG
+  pkg/dead.go:17	unusedH
+  pkg/dead.go:18	unusedI
+  pkg/dead.go:19	unusedJ
+  ... 2 more (use --verbose or --top 0 to show all)
