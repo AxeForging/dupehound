@@ -36,6 +36,7 @@ file_naming_pattern:
     - "*.gif"
     - "*.png"
     - "*.sh"
+    - "*.golden"
   disallowed:
     - "*.env*"
     - ".env*"
