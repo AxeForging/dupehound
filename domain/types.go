@@ -110,14 +110,14 @@ var SupportedLanguages = []Language{
 	},
 	{
 		Name:        "javascript",
-		Extensions:  []string{".js", ".mjs", ".cjs"},
+		Extensions:  []string{".js", ".mjs", ".cjs", ".jsx"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",
 	},
 	{
 		Name:        "typescript",
-		Extensions:  []string{".ts", ".tsx"},
+		Extensions:  []string{".ts", ".tsx", ".mts", ".cts"},
 		LineComment: "//",
 		BlockStart:  "/*",
 		BlockEnd:    "*/",

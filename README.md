@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/dupehound-logo.png" alt="dupehound logo" width="200">
+</p>
+
 # dupehound
 
 Detect code duplication across multiple languages. Single binary, no runtime dependencies, fast.
