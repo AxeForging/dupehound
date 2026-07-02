@@ -19,6 +19,7 @@ Finds type-1 (identical), type-2 (renamed identifiers), and type-3 (near-miss) c
 - [Usage](#usage)
 - [Quick examples](#quick-examples) — basic recipes
 - [More examples & use cases](#more-examples--use-cases) → **[EXAMPLES.md](EXAMPLES.md)** for the full cookbook
+- [Baseline ratchet](#baseline-ratchet-adopt-on-an-existing-codebase)
 - [Quality gate](#quality-gate)
 - [Pre-commit hook](#pre-commit-hook)
 - [Configuration](#configuration)
@@ -54,7 +55,9 @@ dupehound scan [options]
 Options:
   --path, -p           Path to scan (file or directory) [default: .]
   --min-tokens, -t     Minimum tokens to consider a duplicate block [default: 50, ~5 lines]
-  --format, -f         Output format: text, json, sarif, md [default: text]
+  --format, -f         Output format: text, json, sarif, md, github [default: text]
+                       github emits ::warning workflow commands for inline PR
+                       annotations with zero SARIF/upload setup
   --output, -o         Output file (default: stdout)
   --include, -i        Glob patterns to include (repeatable, supports **)
   --exclude, -e        Glob patterns to exclude (repeatable, supports **)
@@ -74,6 +77,13 @@ Options:
   --max-files          Hard cap on collected source files (0 = no cap); fail-fast safety net
   --max-pairs          Runaway backstop on fuzzy candidate pairs; past the limit, type-3
                        detection stops and returns a partial result [default: 50000000, 0 = unlimited]
+  --max-file-size      Skip files larger than this many bytes BEFORE reading them
+                       [default: 5242880 (5MiB), 0 = unlimited]; oversized files are
+                       almost always minified/generated and would dominate memory
+  --baseline           Compare against a baseline file: recorded clones are accepted
+                       debt, only NEW clones (or grown instance counts) fail the scan
+  --write-baseline     Write current clones to a baseline file (accepted debt) and
+                       exit 0; commit it and use --baseline in hooks/CI
   --scan-generated     Include machine-generated files (*.pb.go, @generated / "DO NOT EDIT"
                        headers, etc.); skipped by default as they inflate duplication
   --exit-zero          Always exit 0 even when clones are found
@@ -136,6 +146,8 @@ Jump straight to a topic:
 
 - [Pre-commit hook (lefthook + plain git)](EXAMPLES.md#pre-commit-hook)
 - [CI on pull requests (GitHub Actions + sticky comments)](EXAMPLES.md#ci-on-pull-requests)
+- [Baseline ratchet (`--write-baseline` / `--baseline`)](EXAMPLES.md#baseline-ratchet)
+- [Inline PR annotations (`--format github`)](EXAMPLES.md#github-actions-inline-annotations)
 - [Diff-aware scanning with `--since`](EXAMPLES.md#diff-aware-scanning)
 - [Filtering files with `--include` / `--exclude`](EXAMPLES.md#filtering-files)
 - [Suppressing known duplicates (`.dupehound-ignore` + inline markers)](EXAMPLES.md#suppressing-known-duplicates)
@@ -146,6 +158,27 @@ Jump straight to a topic:
 - [Hook output and AI readability (`--quiet`)](EXAMPLES.md#hook-output-and-ai-readability)
 - [Output formats (text, md, json, sarif)](EXAMPLES.md#output-formats)
 - [Real-world trial on `cli/cli`](EXAMPLES.md#real-world-trial-clicli)
+
+## Baseline ratchet (adopt on an existing codebase)
+
+Most repos already have duplication; failing every scan on day one just gets the tool
+removed. The baseline ratchet records today's clones as accepted debt and fails only
+on **new** duplication — including pasting *yet another copy* of an already-known clone:
+
+```sh
+# once: record current duplication and commit the file
+dupehound scan --write-baseline .dupehound-baseline.json
+git add .dupehound-baseline.json
+
+# in hooks / CI: fails (exit 1) only when NEW clones appear
+dupehound scan --baseline .dupehound-baseline.json
+```
+
+Baseline entries are **content-based fingerprints** of the normalized token structure,
+so they survive line shifts, file renames, and unrelated edits without churn. The file
+is deterministic and diff-friendly. Known clones are hidden from the report (the summary
+still counts them); refactor a known clone away, rewrite the baseline, and the debt
+shrinks — it can only ratchet down.
 
 ## Quality gate
 
@@ -166,6 +199,13 @@ dupehound scan --staged
 ```
 
 The `--staged` flag scans all files for cross-comparison but only reports clones where at least one instance is in a staged file. This catches both within-staged and staged-vs-existing duplication.
+
+Combine with a baseline for the strictest useful hook — block only *new* duplication touching the commit:
+
+```sh
+#!/bin/sh
+dupehound scan --staged --baseline .dupehound-baseline.json --quiet
+```
 
 ## Configuration
 
@@ -205,6 +245,15 @@ Detection is restricted to **function and method bodies** — imports, top-level
 - **json** — machine-readable with per-file stats, duplication percentage, and all clone data
 - **sarif** — SARIF 2.1.0 for GitHub Code Scanning and other SARIF-compatible tools
 - **md** — GitHub-flavored Markdown with expandable `<details>` sections, designed for PR comments
+- **github** — GitHub Actions workflow commands (`::warning file=…,line=…::`) for inline PR annotations; just run `dupehound scan --format github` in any Actions step, no SARIF upload needed
+
+Every clone instance is attributed to its **enclosing function** (`api/user.go:42-63 (in loadUser)`) across all supported languages, and each clone carries:
+
+- **saves ~N lines** — refactor value: lines removable by deduplicating ((instances−1) × block length); the summary shows the repo-wide total
+- **scope** — `same-file` (trivial extraction), `cross-file` (same directory), or `cross-dir` (usually needs a shared package)
+- a stable **content-based fingerprint** (`hash`) usable in `.dupehound-ignore` suppression rules and baselines
+
+If a safety guard reduced type-3 coverage (`--max-pairs`, `--max-bucket`), every format carries an explicit **partial result** marker (`!! PARTIAL RESULT` banner, `partial`/`partial_reason` JSON fields, SARIF run properties) — type-1/2 results are always complete.
 
 ## Exit codes
 
