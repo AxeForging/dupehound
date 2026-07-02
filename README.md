@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/dupehound-logo.png" alt="dupehound logo" width="200">
+  <img src="docs/dupehound-logo-wordmark.png" alt="dupehound logo" width="520">
 </p>
 
 # dupehound

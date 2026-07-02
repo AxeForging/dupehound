@@ -46,7 +46,7 @@ func TestMarkFunctionBodies_NilLang_EverythingMarked(t *testing.T) {
 		{Kind: TokKeyword, Text: "var", Line: 1},
 		{Kind: TokIdent, OrigText: "x", Line: 1},
 	}
-	result := markFunctionBodies(tokens, nil)
+	result, _ := markFunctionBodies(tokens, nil)
 	for i, v := range result {
 		if !v {
 			t.Errorf("nil lang: token %d should be marked true (no filtering)", i)

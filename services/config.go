@@ -66,4 +66,7 @@ func ApplyConfigDefaults(opts *ScanOptions, cfg domain.Config) {
 	if opts.Top == 0 && cfg.Scan.Top > 0 {
 		opts.Top = cfg.Scan.Top
 	}
+	if opts.Baseline == "" && cfg.Scan.Baseline != "" {
+		opts.Baseline = cfg.Scan.Baseline
+	}
 }

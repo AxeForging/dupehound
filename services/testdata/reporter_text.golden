@@ -1,11 +1,14 @@
 dupehound scan results
 ======================
+!! PARTIAL RESULT: type-3 detection stopped at --max-pairs; type-1/2 results are complete
 Scanning diff  : since origin/main  (17 files changed)
 Files scanned : 17 / 20
 Skipped files : 2 (binary)
+Skipped files : 1 (over --max-file-size)
 Total lines   : 3714
 Clones found  : 14 (1 suppressed)
 Duplicate lines: 197 (5.3%)
+Refactor value: ~312 lines removable by deduplication
 New clones    : 3 since origin/main
 Breakdown     : 1 type-1, 13 type-2
 
@@ -23,70 +26,70 @@ Hotspots (files by duplication %):
   ... 2 more files (use --verbose to show all)
 
 Test↔Prod clones (span test and production files):
-  #1    type-2  similarity: 1.00  18 lines  120 tokens  2 instances [test↔prod]
-        svc/user.go:10-27
-        svc/user_test.go:40-57
+  #1    type-2  similarity: 1.00  18 lines  120 tokens  2 instances  saves ~18 lines [test↔prod] [cross-file]
+        svc/user.go:10-27 (in loadUser)
+        svc/user_test.go:40-57 (in TestLoadUser)
         | func A() {
         |   do()
         | }
 
 
 Top clones (by impact):
-  #1    type-2  similarity: 1.00  30 lines  200 tokens  2 instances
+  #1    type-2  similarity: 1.00  30 lines  200 tokens  2 instances  saves ~30 lines [cross-file]
         pkg/f.go:100-130
         pkg/g.go:200-230
         | x := 1
         | y := 2
 
-  #2    type-2  similarity: 1.00  29 lines  195 tokens  2 instances [churn: 1 commits]
+  #2    type-2  similarity: 1.00  29 lines  195 tokens  2 instances  saves ~29 lines [cross-file] [churn: 1 commits]
         pkg/f.go:101-130
         pkg/g.go:201-230
         | x := 1
         | y := 2
 
-  #3    type-2  similarity: 1.00  28 lines  190 tokens  2 instances [churn: 2 commits]
+  #3    type-2  similarity: 1.00  28 lines  190 tokens  2 instances  saves ~28 lines [cross-file] [churn: 2 commits]
         pkg/f.go:102-130
         pkg/g.go:202-230
         | x := 1
         | y := 2
 
-  #4    type-2  similarity: 1.00  27 lines  185 tokens  2 instances [churn: 3 commits]
+  #4    type-2  similarity: 1.00  27 lines  185 tokens  2 instances  saves ~27 lines [cross-file] [churn: 3 commits]
         pkg/f.go:103-130
         pkg/g.go:203-230
         | x := 1
         | y := 2
 
-  #5    type-2  similarity: 1.00  26 lines  180 tokens  2 instances [churn: 4 commits]
+  #5    type-2  similarity: 1.00  26 lines  180 tokens  2 instances  saves ~26 lines [cross-file] [churn: 4 commits]
         pkg/f.go:104-130
         pkg/g.go:204-230
         | x := 1
         | y := 2
 
-  #6    type-2  similarity: 1.00  25 lines  175 tokens  2 instances [churn: 5 commits]
+  #6    type-2  similarity: 1.00  25 lines  175 tokens  2 instances  saves ~25 lines [cross-file] [churn: 5 commits]
         pkg/f.go:105-130
         pkg/g.go:205-230
         | x := 1
         | y := 2
 
-  #7    type-2  similarity: 1.00  24 lines  170 tokens  2 instances [churn: 6 commits]
+  #7    type-2  similarity: 1.00  24 lines  170 tokens  2 instances  saves ~24 lines [cross-file] [churn: 6 commits]
         pkg/f.go:106-130
         pkg/g.go:206-230
         | x := 1
         | y := 2
 
-  #8    type-2  similarity: 1.00  23 lines  165 tokens  2 instances [churn: 7 commits]
+  #8    type-2  similarity: 1.00  23 lines  165 tokens  2 instances  saves ~23 lines [cross-file] [churn: 7 commits]
         pkg/f.go:107-130
         pkg/g.go:207-230
         | x := 1
         | y := 2
 
-  #9    type-2  similarity: 1.00  22 lines  160 tokens  2 instances [churn: 8 commits]
+  #9    type-2  similarity: 1.00  22 lines  160 tokens  2 instances  saves ~22 lines [cross-file] [churn: 8 commits]
         pkg/f.go:108-130
         pkg/g.go:208-230
         | x := 1
         | y := 2
 
-  #10   type-2  similarity: 1.00  21 lines  155 tokens  2 instances [churn: 9 commits]
+  #10   type-2  similarity: 1.00  21 lines  155 tokens  2 instances  saves ~21 lines [cross-file] [churn: 9 commits]
         pkg/f.go:109-130
         pkg/g.go:209-230
         | x := 1
