@@ -695,11 +695,22 @@ func DetectLanguage(path string) *domain.Language {
 	return nil
 }
 
-// deduplicateOverlapping removes clones whose instances are fully contained
-// within a larger clone's instances in the same files. This prevents the top
-// clones list from showing the same region multiple times at different sizes.
+// overlapSubsumeFrac is the fraction of an instance's lines that must be
+// covered by an already-kept clone's instance for it to count as "the same
+// region". The check is PAIR-AWARE: a candidate is dropped only when all of
+// its instances are covered by instances of the SAME kept clone — i.e. it
+// links the same regions an existing finding already links. That precision is
+// what allows a threshold this low without eating genuinely distinct clones;
+// the old strict-containment rule (100%, any kept range) let one-line-offset
+// re-reports of the same region through, so heavily duplicated code produced
+// several findings for a single refactor target.
+const overlapSubsumeFrac = 0.6
+
+// deduplicateOverlapping removes clones that report the same duplicated
+// region pair as a larger already-kept clone (possibly at a slightly
+// different size or offset). This keeps one finding per refactor target.
 func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
-	// Build a set of all instance ranges per clone, sorted largest first.
+	// Sort largest first so the biggest description of a region wins.
 	// The Hash tiebreak makes the kept order deterministic when sizes are equal.
 	sort.Slice(clones, func(i, j int) bool {
 		if clones[i].LineCount != clones[j].LineCount {
@@ -708,36 +719,50 @@ func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
 		return clones[i].Hash < clones[j].Hash
 	})
 
-	// For each kept clone, record its covered ranges.
-	type rangeKey struct {
-		file  string
-		start int
-		end   int
+	// Kept instance ranges, indexed by file, each tagged with the kept clone
+	// it belongs to so the subsume check can require a single common clone.
+	type keptRange struct {
+		start, end int
+		cloneIdx   int
 	}
+	byFile := make(map[string][]keptRange)
 	kept := make([]domain.Clone, 0, len(clones))
-	coveredRanges := make([]rangeKey, 0, len(clones)*2)
 
 	for _, c := range clones {
-		allSubsumed := len(c.Instances) > 0
-		for _, inst := range c.Instances {
-			subsumed := false
-			for _, r := range coveredRanges {
-				if inst.File == r.file && inst.StartLine >= r.start && inst.EndLine <= r.end {
-					subsumed = true
-					break
+		// For each instance, collect the kept clones that cover it; the
+		// candidate is redundant only if one kept clone covers ALL instances.
+		common := map[int]bool{}
+		subsumed := len(c.Instances) > 0
+		for i, inst := range c.Instances {
+			instLines := inst.EndLine - inst.StartLine + 1
+			cover := map[int]bool{}
+			for _, r := range byFile[inst.File] {
+				overlap := min(inst.EndLine, r.end) - max(inst.StartLine, r.start) + 1
+				if overlap > 0 && float64(overlap) >= overlapSubsumeFrac*float64(instLines) {
+					cover[r.cloneIdx] = true
 				}
 			}
-			if !subsumed {
-				allSubsumed = false
+			if i == 0 {
+				common = cover
+			} else {
+				for idx := range common {
+					if !cover[idx] {
+						delete(common, idx)
+					}
+				}
+			}
+			if len(common) == 0 {
+				subsumed = false
 				break
 			}
 		}
-		if allSubsumed {
+		if subsumed {
 			continue
 		}
+		idx := len(kept)
 		kept = append(kept, c)
 		for _, inst := range c.Instances {
-			coveredRanges = append(coveredRanges, rangeKey{inst.File, inst.StartLine, inst.EndLine})
+			byFile[inst.File] = append(byFile[inst.File], keptRange{inst.StartLine, inst.EndLine, idx})
 		}
 	}
 
