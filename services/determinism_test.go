@@ -49,7 +49,7 @@ func handler%d(items []int) int {
 
 	want := ""
 	for run := 0; run < 25; run++ {
-		clones := DetectWithOptions(files, DetectOptions{MinTokens: 12, MinSimilarity: 0.7})
+		clones, _ := DetectWithOptions(files, DetectOptions{MinTokens: 12, MinSimilarity: 0.7})
 		got := fingerprint(clones)
 		if run == 0 {
 			want = got

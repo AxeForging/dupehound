@@ -141,3 +141,21 @@ var maxPairsFlag = cli.IntFlag{
 	Value: 50000000,
 	Usage: "Runaway backstop: cap type-3 detection past this many fuzzy candidate pairs, returning partial results (default 50M; 0 = unlimited). Guards CPU time on pathological inputs",
 }
+
+var maxFileSizeFlag = cli.Int64Flag{
+	Name:  "max-file-size",
+	Value: 5 * 1024 * 1024,
+	Usage: "Skip files larger than this many bytes before reading them (default 5MiB, 0 = unlimited). Oversized files are almost always minified/generated and would dominate memory",
+}
+
+var baselineFlag = cli.StringFlag{
+	Name:  "baseline",
+	Value: "",
+	Usage: "Compare against a baseline file: recorded clones are accepted debt, only NEW clones (or grown instance counts) fail the scan",
+}
+
+var writeBaselineFlag = cli.StringFlag{
+	Name:  "write-baseline",
+	Value: "",
+	Usage: "Write the current clones to a baseline file (accepted debt) and exit 0; commit it and use --baseline in hooks/CI to block only new duplication",
+}

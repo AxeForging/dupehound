@@ -122,7 +122,7 @@ func TestDetector_MaxPairs_CapsFuzzyGracefully(t *testing.T) {
 	}
 
 	// Baseline: no pair cap → full type-3 coverage.
-	baseline := DetectWithOptions(files, DetectOptions{
+	baseline, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     minTokens,
 		MinSimilarity: minSim,
 	})
@@ -134,7 +134,7 @@ func TestDetector_MaxPairs_CapsFuzzyGracefully(t *testing.T) {
 	// Capped: pair cap = 1 trips almost immediately, so detection stops after
 	// the first block's worth of pairs.
 	opts := DetectOptions{MinTokens: minTokens, MinSimilarity: minSim, MaxPairs: 1}
-	capped := DetectWithOptions(files, opts)
+	capped, _ := DetectWithOptions(files, opts)
 
 	// 1. Partial, not a blackout, not more than baseline.
 	if len(capped) > len(baseline) {
@@ -148,7 +148,8 @@ func TestDetector_MaxPairs_CapsFuzzyGracefully(t *testing.T) {
 	// of cutting on a block boundary rather than mid-block.
 	first := fingerprint(capped)
 	for run := 1; run < 10; run++ {
-		if got := fingerprint(DetectWithOptions(files, opts)); got != first {
+		rerun, _ := DetectWithOptions(files, opts)
+		if got := fingerprint(rerun); got != first {
 			t.Fatalf("capped result is non-deterministic\nrun 0:\n%s\nrun %d:\n%s", first, run, got)
 		}
 	}
@@ -171,12 +172,12 @@ func TestDetector_MaxPairs_Zero(t *testing.T) {
 		makeTokenizedDup(t, "/a.go"),
 		makeTokenizedDup(t, "/b.go"),
 	}
-	withZero := DetectWithOptions(files, DetectOptions{
+	withZero, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     10,
 		MinSimilarity: 0.6,
 		MaxPairs:      0,
 	})
-	withoutOption := DetectWithOptions(files, DetectOptions{
+	withoutOption, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     10,
 		MinSimilarity: 0.6,
 	})

@@ -43,7 +43,7 @@ func TestDetector_InScopeFilter_OnlyReportsClonesTouchingScope(t *testing.T) {
 	}
 
 	// Baseline: no scope filter → 1 clone group with all 3 files.
-	baseline := DetectWithOptions(files, DetectOptions{
+	baseline, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     20,
 		MinSimilarity: 1.0, // exact only — keeps the test deterministic
 	})
@@ -57,7 +57,7 @@ func TestDetector_InScopeFilter_OnlyReportsClonesTouchingScope(t *testing.T) {
 	// In-scope: only c.go is in scope. Clone group still spans all 3 files
 	// (the detector doesn't drop instances; it just decides whether to emit
 	// the group), and it must be emitted because c.go IS in scope.
-	scoped := DetectWithOptions(files, DetectOptions{
+	scoped, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     20,
 		MinSimilarity: 1.0,
 		InScopeFiles:  []bool{false, false, true}, // a, b out; c in
@@ -86,7 +86,7 @@ func TestDetector_InScopeFilter_DropsAllOutOfScopeClones(t *testing.T) {
 		makeTokenizedDup(t, "/b.go"),
 		makeTokenizedDup(t, "/c.go"),
 	}
-	clones := DetectWithOptions(files, DetectOptions{
+	clones, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     20,
 		MinSimilarity: 1.0,
 		InScopeFiles:  []bool{false, false, false},
@@ -106,12 +106,12 @@ func TestDetector_InScopeFilter_NilPreservesOriginalBehavior(t *testing.T) {
 		makeTokenizedDup(t, "/a.go"),
 		makeTokenizedDup(t, "/b.go"),
 	}
-	withNil := DetectWithOptions(files, DetectOptions{
+	withNil, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     20,
 		MinSimilarity: 1.0,
 		InScopeFiles:  nil,
 	})
-	withoutOption := DetectWithOptions(files, DetectOptions{
+	withoutOption, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     20,
 		MinSimilarity: 1.0,
 	})
@@ -152,13 +152,13 @@ func handler() int {
 `, lang)
 
 	// Baseline with fuzzy on: at minimum the exact path is exercised.
-	baseline := DetectWithOptions([]TokenizedFile{a, b}, DetectOptions{
+	baseline, _ := DetectWithOptions([]TokenizedFile{a, b}, DetectOptions{
 		MinTokens:     10,
 		MinSimilarity: 0.6,
 	})
 	_ = baseline // The exact count varies with bucket parameters; we only need the comparison below.
 
-	scoped := DetectWithOptions([]TokenizedFile{a, b}, DetectOptions{
+	scoped, _ := DetectWithOptions([]TokenizedFile{a, b}, DetectOptions{
 		MinTokens:     10,
 		MinSimilarity: 0.6,
 		InScopeFiles:  []bool{false, false}, // nothing in scope
@@ -411,7 +411,7 @@ func TestDetector_InScopeFilter_OutOfRangeIndexIsSafe(t *testing.T) {
 			t.Errorf("detector panicked on short scope slice: %v", r)
 		}
 	}()
-	clones := DetectWithOptions(files, DetectOptions{
+	clones, _ := DetectWithOptions(files, DetectOptions{
 		MinTokens:     20,
 		MinSimilarity: 1.0,
 		InScopeFiles:  []bool{true}, // length 1 — shorter than file count

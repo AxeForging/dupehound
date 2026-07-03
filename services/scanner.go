@@ -35,7 +35,10 @@ type ScanOptions struct {
 	IgnoreFile     string  // path to .dupehound-ignore file (auto-discovered if empty)
 	MaxFiles       int     // hard cap on collected files (0 = no cap); fail-fast safety net
 	MaxPairs       int     // runaway backstop on fuzzy pairs (0 = no cap); caps type-3 to a partial result past the limit
+	MaxFileSize    int64   // per-file size cap in bytes (0 = no cap); oversized files are skipped before being read
 	ScanGenerated  bool    // when true, do NOT skip machine-generated files (default: skip them)
+	Baseline       string  // path to a baseline file: known clones become recorded debt, only new ones fail
+	WriteBaseline  string  // path to write a new baseline capturing the current clones as accepted debt
 }
 
 // ScannerService performs code duplication detection.
@@ -88,10 +91,23 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	skippedFiles := 0
 	fileLineCount := make(map[string]int) // path → total lines
 
+	skippedLarge := 0
 	for _, path := range files {
 		lang := DetectLanguage(path)
 		if lang == nil {
 			continue
+		}
+
+		// Size guard BEFORE reading: a single giant (usually minified or
+		// generated) file would otherwise be pulled fully into memory and
+		// tokenized before any other cap could help.
+		if opts.MaxFileSize > 0 {
+			if fi, statErr := os.Stat(path); statErr == nil && fi.Size() > opts.MaxFileSize {
+				helpers.Log.Warn().Str("file", path).Int64("size_bytes", fi.Size()).Int64("max_file_size", opts.MaxFileSize).
+					Msg("skipping oversized file (raise --max-file-size to include)")
+				skippedLarge++
+				continue
+			}
 		}
 
 		data, err := os.ReadFile(path)
@@ -199,7 +215,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		}
 	}
 
-	clones := DetectWithOptions(tokenizedFiles, DetectOptions{
+	clones, detectStats := DetectWithOptions(tokenizedFiles, DetectOptions{
 		MinTokens:     minTokens,
 		MinSimilarity: minSimilarity,
 		MaxBucket:     opts.MaxBucket,
@@ -240,6 +256,36 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		}
 	}
 
+	// Insight annotations: clone scope (same-file / cross-file / cross-dir)
+	// and refactor savings ((instances-1) × line_count).
+	annotateInsights(clones)
+
+	// Baseline ratchet: mark clones recorded in the baseline as known debt.
+	// Only clones NOT in the baseline (or with grown instance counts) are
+	// "new" and fail the scan. Load errors are hard errors — silently
+	// scanning without the ratchet would let new duplication through.
+	var baselineKnown, baselineNew int
+	if opts.Baseline != "" {
+		bl, blErr := LoadBaseline(opts.Baseline)
+		if blErr != nil {
+			return nil, blErr
+		}
+		baselineKnown, baselineNew = ApplyBaseline(clones, bl)
+		helpers.Log.Info().
+			Str("baseline", opts.Baseline).
+			Int("known", baselineKnown).
+			Int("new", baselineNew).
+			Msg("baseline applied")
+	}
+
+	// Write a new baseline capturing the current state as accepted debt.
+	if opts.WriteBaseline != "" {
+		if wbErr := WriteBaseline(opts.WriteBaseline, clones, minTokens); wbErr != nil {
+			return nil, wbErr
+		}
+		helpers.Log.Info().Str("baseline", opts.WriteBaseline).Int("clones", len(clones)).Msg("baseline written")
+	}
+
 	// Diff-aware scanning: refine to clones whose instances overlap actual
 	// changed line ranges. The file-level filter has already run upfront in
 	// the detector; this is the line-precise pass that produces NewClones.
@@ -274,7 +320,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	if opts.DeadCode {
 		usageFiles := tokenizedFiles
 		if len(opts.Exclude) > 0 || len(opts.Include) > 0 {
-			extraTokenized := buildUsageBackground(opts.Path, opts.Language, ignoreRules, tokenizedFiles)
+			extraTokenized := buildUsageBackground(opts.Path, opts.Language, ignoreRules, tokenizedFiles, opts.MaxFileSize)
 			if len(extraTokenized) > 0 {
 				usageFiles = append(append([]TokenizedFile{}, tokenizedFiles...), extraTokenized...)
 				helpers.Log.Debug().
@@ -301,17 +347,26 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	fileStats := buildFileStats(clones, fileLineCount)
 
 	report := &domain.Report{
-		TotalFiles:       totalFiles,
-		ScannedFiles:     scannedFiles,
-		SkippedFiles:     skippedFiles,
-		TotalClones:      len(clones),
-		TotalLines:       totalLines,
-		DuplicateLines:   duplicateLines,
-		DuplicationPct:   duplicationPct,
-		SuppressedClones: suppressedCount,
-		FileStats:        fileStats,
-		Clones:           filterSuppressed(clones, opts.ShowSuppressed),
-		DeadFunctions:    deadFuncs,
+		TotalFiles:        totalFiles,
+		ScannedFiles:      scannedFiles,
+		SkippedFiles:      skippedFiles,
+		SkippedLargeFiles: skippedLarge,
+		TotalClones:       len(clones),
+		TotalLines:        totalLines,
+		DuplicateLines:    duplicateLines,
+		DuplicationPct:    duplicationPct,
+		SavedLines:        totalSavedLines(clones),
+		SuppressedClones:  suppressedCount,
+		Partial:           detectStats.Partial(),
+		PartialReason:     detectStats.Reason(),
+		FileStats:         fileStats,
+		Clones:            filterBaselineKnown(filterSuppressed(clones, opts.ShowSuppressed), opts.ShowSuppressed),
+		DeadFunctions:     deadFuncs,
+	}
+	if opts.Baseline != "" {
+		report.BaselineFile = opts.Baseline
+		report.BaselineKnown = baselineKnown
+		report.BaselineNew = baselineNew
 	}
 	if opts.Since != "" && sinceDiffFiles >= 0 {
 		report.SinceDiffRef = opts.Since
@@ -329,7 +384,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 // other excluded code) still contribute their identifier-usage information
 // to the dead-code analysis. Binary files are skipped, just like the main
 // collection path.
-func buildUsageBackground(scanPath, language string, ignoreRules []IgnoreRule, inScope []TokenizedFile) []TokenizedFile {
+func buildUsageBackground(scanPath, language string, ignoreRules []IgnoreRule, inScope []TokenizedFile, maxFileSize int64) []TokenizedFile {
 	allFiles, err := collectFiles(scanPath, nil, nil, language)
 	if err != nil || len(allFiles) == 0 {
 		return nil
@@ -347,6 +402,11 @@ func buildUsageBackground(scanPath, language string, ignoreRules []IgnoreRule, i
 		if lang == nil {
 			continue
 		}
+		if maxFileSize > 0 {
+			if fi, statErr := os.Stat(path); statErr == nil && fi.Size() > maxFileSize {
+				continue
+			}
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -357,6 +417,63 @@ func buildUsageBackground(scanPath, language string, ignoreRules []IgnoreRule, i
 		extra = append(extra, BuildTokenizedFileWithIgnore(path, string(data), lang, ignoreRules))
 	}
 	return extra
+}
+
+// annotateInsights fills in the per-clone refactor metrics: SavedLines (lines
+// removable by deduplicating: every instance beyond the first is deletable)
+// and Scope (same-file / cross-file / cross-dir), which signals how hard the
+// refactor is — same-file extractions are trivial, cross-dir ones usually
+// need a shared package.
+func annotateInsights(clones []domain.Clone) {
+	for i := range clones {
+		c := &clones[i]
+		if n := len(c.Instances); n > 1 {
+			c.SavedLines = (n - 1) * c.LineCount
+		}
+		files := make(map[string]bool, len(c.Instances))
+		dirs := make(map[string]bool, len(c.Instances))
+		for _, inst := range c.Instances {
+			files[inst.File] = true
+			dirs[filepath.Dir(inst.File)] = true
+		}
+		switch {
+		case len(dirs) > 1:
+			c.Scope = domain.ScopeCrossDir
+		case len(files) > 1:
+			c.Scope = domain.ScopeCrossFile
+		default:
+			c.Scope = domain.ScopeSameFile
+		}
+	}
+}
+
+// totalSavedLines sums the refactor savings across all non-suppressed clones
+// (baseline-known clones count too — they are real, standing debt).
+func totalSavedLines(clones []domain.Clone) int {
+	total := 0
+	for _, c := range clones {
+		if c.Suppressed {
+			continue
+		}
+		total += c.SavedLines
+	}
+	return total
+}
+
+// filterBaselineKnown hides baseline-known clones from the clone list unless
+// showAll is set (the summary still counts them via BaselineKnown). This keeps
+// hook and CI output focused on the clones that are actually actionable.
+func filterBaselineKnown(clones []domain.Clone, showAll bool) []domain.Clone {
+	if showAll {
+		return clones
+	}
+	result := make([]domain.Clone, 0, len(clones))
+	for _, c := range clones {
+		if !c.Baseline {
+			result = append(result, c)
+		}
+	}
+	return result
 }
 
 // filterSuppressed returns only non-suppressed clones (or all if includeSuppressed).
@@ -578,11 +695,22 @@ func DetectLanguage(path string) *domain.Language {
 	return nil
 }
 
-// deduplicateOverlapping removes clones whose instances are fully contained
-// within a larger clone's instances in the same files. This prevents the top
-// clones list from showing the same region multiple times at different sizes.
+// overlapSubsumeFrac is the fraction of an instance's lines that must be
+// covered by an already-kept clone's instance for it to count as "the same
+// region". The check is PAIR-AWARE: a candidate is dropped only when all of
+// its instances are covered by instances of the SAME kept clone — i.e. it
+// links the same regions an existing finding already links. That precision is
+// what allows a threshold this low without eating genuinely distinct clones;
+// the old strict-containment rule (100%, any kept range) let one-line-offset
+// re-reports of the same region through, so heavily duplicated code produced
+// several findings for a single refactor target.
+const overlapSubsumeFrac = 0.6
+
+// deduplicateOverlapping removes clones that report the same duplicated
+// region pair as a larger already-kept clone (possibly at a slightly
+// different size or offset). This keeps one finding per refactor target.
 func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
-	// Build a set of all instance ranges per clone, sorted largest first.
+	// Sort largest first so the biggest description of a region wins.
 	// The Hash tiebreak makes the kept order deterministic when sizes are equal.
 	sort.Slice(clones, func(i, j int) bool {
 		if clones[i].LineCount != clones[j].LineCount {
@@ -591,36 +719,50 @@ func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
 		return clones[i].Hash < clones[j].Hash
 	})
 
-	// For each kept clone, record its covered ranges.
-	type rangeKey struct {
-		file  string
-		start int
-		end   int
+	// Kept instance ranges, indexed by file, each tagged with the kept clone
+	// it belongs to so the subsume check can require a single common clone.
+	type keptRange struct {
+		start, end int
+		cloneIdx   int
 	}
+	byFile := make(map[string][]keptRange)
 	kept := make([]domain.Clone, 0, len(clones))
-	coveredRanges := make([]rangeKey, 0, len(clones)*2)
 
 	for _, c := range clones {
-		allSubsumed := len(c.Instances) > 0
-		for _, inst := range c.Instances {
-			subsumed := false
-			for _, r := range coveredRanges {
-				if inst.File == r.file && inst.StartLine >= r.start && inst.EndLine <= r.end {
-					subsumed = true
-					break
+		// For each instance, collect the kept clones that cover it; the
+		// candidate is redundant only if one kept clone covers ALL instances.
+		common := map[int]bool{}
+		subsumed := len(c.Instances) > 0
+		for i, inst := range c.Instances {
+			instLines := inst.EndLine - inst.StartLine + 1
+			cover := map[int]bool{}
+			for _, r := range byFile[inst.File] {
+				overlap := min(inst.EndLine, r.end) - max(inst.StartLine, r.start) + 1
+				if overlap > 0 && float64(overlap) >= overlapSubsumeFrac*float64(instLines) {
+					cover[r.cloneIdx] = true
 				}
 			}
-			if !subsumed {
-				allSubsumed = false
+			if i == 0 {
+				common = cover
+			} else {
+				for idx := range common {
+					if !cover[idx] {
+						delete(common, idx)
+					}
+				}
+			}
+			if len(common) == 0 {
+				subsumed = false
 				break
 			}
 		}
-		if allSubsumed {
+		if subsumed {
 			continue
 		}
+		idx := len(kept)
 		kept = append(kept, c)
 		for _, inst := range c.Instances {
-			coveredRanges = append(coveredRanges, rangeKey{inst.File, inst.StartLine, inst.EndLine})
+			byFile[inst.File] = append(byFile[inst.File], keptRange{inst.StartLine, inst.EndLine, idx})
 		}
 	}
 

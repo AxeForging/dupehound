@@ -648,7 +648,10 @@ var funcKeywords = map[string]map[string]bool{
 //   - Python: scan for def keyword, mark from the colon through the next def
 //     or dedent (approximated by next token at same or lesser line offset).
 //   - Ruby/Elixir: scan for def, mark through matching end keyword.
-func markFunctionBodies(tokens []Token, lang *domain.Language) []bool {
+//
+// It also returns the collected function spans (token ranges + best-effort
+// names) so detected clones can be attributed to the function they live in.
+func markFunctionBodies(tokens []Token, lang *domain.Language) ([]bool, []FuncSpan) {
 	n := len(tokens)
 	inFunc := make([]bool, n)
 
@@ -657,34 +660,36 @@ func markFunctionBodies(tokens []Token, lang *domain.Language) []bool {
 		for i := range inFunc {
 			inFunc[i] = true
 		}
-		return inFunc
+		return inFunc, nil
 	}
 
+	var funcs []FuncSpan
 	switch lang.Name {
 	case "javascript", "typescript":
-		markJSFunctions(tokens, inFunc)
+		funcs = markJSFunctions(tokens, inFunc)
 	case "python":
-		markPythonFunctions(tokens, inFunc)
+		funcs = markPythonFunctions(tokens, inFunc)
 	case "ruby":
-		markDefEndFunctions(tokens, inFunc, "def", "end")
+		funcs = markDefEndFunctions(tokens, inFunc, "def", "end")
 	case "elixir":
-		markDefEndFunctions(tokens, inFunc, "", "end")
+		funcs = markDefEndFunctions(tokens, inFunc, "", "end")
 	case "lua":
-		markDefEndFunctions(tokens, inFunc, "function", "end")
+		funcs = markDefEndFunctions(tokens, inFunc, "function", "end")
 	case "sql":
-		markSQLFunctions(tokens, inFunc)
+		funcs = markSQLFunctions(tokens, inFunc)
 	default:
-		markBraceFunctions(tokens, inFunc, lang)
+		funcs = markBraceFunctions(tokens, inFunc, lang)
 	}
 
-	return inFunc
+	return inFunc, funcs
 }
 
 // markBraceFunctions handles brace-based languages.
-func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
+func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) []FuncSpan {
 	fkws := funcKeywords[lang.Name]
 	hasFuncKeywords := len(fkws) > 0
 
+	var funcs []FuncSpan
 	n := len(tokens)
 	if hasFuncKeywords {
 		// Languages with explicit func keywords: find keyword, then opening {, then match }.
@@ -708,8 +713,17 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
 			if braceIdx < 0 {
 				continue
 			}
+			// R defines functions by assignment (`name <- function(…)`); every
+			// other keyword language names them after the keyword.
+			var name string
+			if lang.Name == "r" {
+				name = funcNameBeforeAssign(tokens, i)
+			} else {
+				name = funcNameAfterKeyword(tokens, i)
+			}
 			// Track brace depth from the opening brace.
 			depth := 1
+			end := braceIdx
 			for j := braceIdx + 1; j < n && depth > 0; j++ {
 				if tokens[j].Kind == TokOperator {
 					switch tokens[j].Text {
@@ -721,7 +735,11 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
 				}
 				if depth > 0 {
 					inFunc[j] = true
+					end = j
 				}
+			}
+			if end > braceIdx {
+				funcs = append(funcs, FuncSpan{Start: braceIdx + 1, End: end, Name: name})
 			}
 		}
 	} else {
@@ -729,18 +747,39 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
 		// Any brace block entered at depth 0 or 1 marks its contents.
 		// depth 0 → top-level function (C) or class body (Java)
 		// depth 1 → method inside a class
+		//
+		// Spans are recorded for every depth-0/1 brace block so that Java/C#
+		// methods (depth 1, named via `…) {`) nest inside their class body
+		// span (depth 0, anonymous); enclosingFuncName picks the innermost
+		// NAMED span, which yields the method name.
+		type openSpan struct {
+			start int
+			name  string
+			depth int
+		}
+		var stack []openSpan
 		depth := 0
 		funcDepth := -1 // depth at which we entered the "function" block
 		for i := 0; i < n; i++ {
 			if tokens[i].Kind == TokOperator {
 				switch tokens[i].Text {
 				case "{":
-					if depth <= 1 && funcDepth < 0 {
-						funcDepth = depth
+					if depth <= 1 {
+						stack = append(stack, openSpan{start: i + 1, name: cStyleFuncName(tokens, i), depth: depth})
+						if funcDepth < 0 {
+							funcDepth = depth
+						}
 					}
 					depth++
 				case "}":
 					depth--
+					if len(stack) > 0 && stack[len(stack)-1].depth == depth {
+						top := stack[len(stack)-1]
+						stack = stack[:len(stack)-1]
+						if i-1 >= top.start {
+							funcs = append(funcs, FuncSpan{Start: top.start, End: i - 1, Name: top.name})
+						}
+					}
 					if depth == funcDepth {
 						funcDepth = -1
 					}
@@ -750,7 +789,14 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) {
 				inFunc[i] = true
 			}
 		}
+		// Unclosed blocks at EOF — keep what we marked.
+		for _, s := range stack {
+			if n-1 >= s.start {
+				funcs = append(funcs, FuncSpan{Start: s.start, End: n - 1, Name: s.name})
+			}
+		}
 	}
+	return funcs
 }
 
 // jsControlKeywords are keywords that take a `(...)` and a `{ }` block but are
@@ -775,7 +821,8 @@ var jsControlKeywords = map[string]bool{
 //
 // Object literals (`= {`), class/interface bodies (`class C {`), and type
 // aliases are not preceded by `)`/`=>`, so they remain excluded.
-func markJSFunctions(tokens []Token, inFunc []bool) {
+func markJSFunctions(tokens []Token, inFunc []bool) []FuncSpan {
+	var funcs []FuncSpan
 	n := len(tokens)
 	for i := 0; i < n; i++ {
 		t := tokens[i]
@@ -783,21 +830,28 @@ func markJSFunctions(tokens []Token, inFunc []bool) {
 			continue
 		}
 		bodyIdx := -1
+		name := ""
 		switch t.Text {
 		case "=>":
 			// Arrow function body: `=> {`.
 			if i+1 < n && isOpenBrace(tokens[i+1]) {
 				bodyIdx = i + 1
+				name = jsArrowFuncName(tokens, i)
 			}
 		case ")":
 			if b := jsFindBodyBrace(tokens, i); b >= 0 && jsParenIsFunctionParams(tokens, i) {
 				bodyIdx = b
+				name = jsFuncName(tokens, i)
 			}
 		}
 		if bodyIdx >= 0 {
-			markBraceBody(tokens, inFunc, bodyIdx)
+			end := markBraceBody(tokens, inFunc, bodyIdx)
+			if end > bodyIdx {
+				funcs = append(funcs, FuncSpan{Start: bodyIdx + 1, End: end, Name: name})
+			}
 		}
 	}
+	return funcs
 }
 
 // isOpenBrace reports whether tok is a `{` operator.
@@ -807,9 +861,11 @@ func isOpenBrace(tok Token) bool {
 
 // markBraceBody marks every token strictly inside the balanced `{ }` pair that
 // opens at braceIdx as in-function. The braces themselves are not marked.
-func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) {
+// Returns the index of the last marked token (braceIdx when the body is empty).
+func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) int {
 	n := len(tokens)
 	depth := 1
+	end := braceIdx
 	for j := braceIdx + 1; j < n && depth > 0; j++ {
 		if tokens[j].Kind == TokOperator {
 			switch tokens[j].Text {
@@ -821,8 +877,10 @@ func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) {
 		}
 		if depth > 0 {
 			inFunc[j] = true
+			end = j
 		}
 	}
+	return end
 }
 
 // jsFindBodyBrace returns the index of the `{` that opens the body following the
@@ -961,7 +1019,8 @@ func scanJSRegex(src string, pos, n int) int {
 // markPythonFunctions marks tokens after `def name(...):` as in-function.
 // Since we don't have indentation info in the token stream, we mark from
 // the colon after def through to the next def/class at the same scope or EOF.
-func markPythonFunctions(tokens []Token, inFunc []bool) {
+func markPythonFunctions(tokens []Token, inFunc []bool) []FuncSpan {
+	var funcs []FuncSpan
 	n := len(tokens)
 	i := 0
 	for i < n {
@@ -977,6 +1036,7 @@ func markPythonFunctions(tokens []Token, inFunc []bool) {
 					continue
 				}
 			}
+			name := funcNameAfterKeyword(tokens, i) // i points at `def`
 			// Find the colon that ends the signature.
 			colonIdx := -1
 			for j := start; j < n; j++ {
@@ -990,11 +1050,16 @@ func markPythonFunctions(tokens []Token, inFunc []bool) {
 				continue
 			}
 			// Mark everything after the colon until next def/class at same or lesser indentation.
-			defLine := tokens[start].Line
+			end := colonIdx
 			for j := colonIdx + 1; j < n; j++ {
 				// Stop at next top-level def or class (heuristic: if the def/class
 				// is on a line that's <= the original def line's indent, we stop).
-				if tokens[j].Kind == TokKeyword && (tokens[j].Text == "def" || tokens[j].Text == "class") {
+				// `async def` arrives as the async keyword first, so treat it as a
+				// def-boundary too — otherwise the gap check below compares def
+				// against the same-line async token and never fires.
+				if tokens[j].Kind == TokKeyword &&
+					(tokens[j].Text == "def" || tokens[j].Text == "class" ||
+						(tokens[j].Text == "async" && j+1 < n && tokens[j+1].Kind == TokKeyword && tokens[j+1].Text == "def")) {
 					// Same or earlier line offset means we've left the function.
 					// Since we don't have indentation, use a simpler heuristic:
 					// if there's a blank-line gap (line difference > 1 from previous token),
@@ -1005,18 +1070,23 @@ func markPythonFunctions(tokens []Token, inFunc []bool) {
 					}
 				}
 				inFunc[j] = true
+				end = j
 				if j == n-1 {
 					i = n
 				}
 			}
-			_ = defLine
+			if end > colonIdx {
+				funcs = append(funcs, FuncSpan{Start: colonIdx + 1, End: end, Name: name})
+			}
 		}
 		i++
 	}
+	return funcs
 }
 
 // markSQLFunctions marks tokens inside SQL FUNCTION/PROCEDURE bodies (BEGIN...END).
-func markSQLFunctions(tokens []Token, inFunc []bool) {
+func markSQLFunctions(tokens []Token, inFunc []bool) []FuncSpan {
+	var funcs []FuncSpan
 	n := len(tokens)
 	fkws := map[string]bool{
 		"FUNCTION": true, "PROCEDURE": true,
@@ -1037,8 +1107,10 @@ func markSQLFunctions(tokens []Token, inFunc []bool) {
 		if beginIdx < 0 {
 			continue
 		}
+		name := funcNameAfterKeyword(tokens, i)
 		// Track BEGIN/END depth.
 		depth := 1
+		end := beginIdx
 		for j := beginIdx + 1; j < n && depth > 0; j++ {
 			if tokens[j].Kind == TokKeyword {
 				switch tokens[j].Text {
@@ -1050,13 +1122,18 @@ func markSQLFunctions(tokens []Token, inFunc []bool) {
 			}
 			if depth > 0 {
 				inFunc[j] = true
+				end = j
 			}
 		}
+		if end > beginIdx {
+			funcs = append(funcs, FuncSpan{Start: beginIdx + 1, End: end, Name: name})
+		}
 	}
+	return funcs
 }
 
 // markDefEndFunctions marks tokens between def and end keywords (Ruby, Elixir).
-func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) {
+func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) []FuncSpan {
 	defKeywords := map[string]bool{"def": true}
 	if defKw != "" {
 		defKeywords = map[string]bool{defKw: true}
@@ -1072,14 +1149,17 @@ func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) {
 		"if": true, "case": true, "cond": true,
 		"for": true, "while": true, "repeat": true,
 	}
+	var funcs []FuncSpan
 	n := len(tokens)
 	for i := 0; i < n; i++ {
 		t := tokens[i]
 		if t.Kind != TokKeyword || !defKeywords[t.Text] {
 			continue
 		}
+		name := funcNameAfterKeyword(tokens, i)
 		// Find matching end keyword, tracking nested def/end/do pairs.
 		depth := 1
+		end := i
 		for j := i + 1; j < n && depth > 0; j++ {
 			if tokens[j].Kind == TokKeyword {
 				if defKeywords[tokens[j].Text] || nestKeywords[tokens[j].Text] {
@@ -1090,9 +1170,14 @@ func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) {
 			}
 			if depth > 0 {
 				inFunc[j] = true
+				end = j
 			}
 		}
+		if end > i {
+			funcs = append(funcs, FuncSpan{Start: i + 1, End: end, Name: name})
+		}
 	}
+	return funcs
 }
 
 // strSet converts a variadic list of strings into a bool map.

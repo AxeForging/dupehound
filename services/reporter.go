@@ -25,7 +25,7 @@ type FormatOptions struct {
 	ShowSuppressed bool   // include suppressed clones in output
 }
 
-// FormatReport formats a Report as text, json, sarif, or md.
+// FormatReport formats a Report as text, json, sarif, md, or github.
 func FormatReport(report *domain.Report, format string, opts FormatOptions) (string, error) {
 	switch strings.ToLower(format) {
 	case "text", "":
@@ -36,8 +36,10 @@ func FormatReport(report *domain.Report, format string, opts FormatOptions) (str
 		return formatSARIF(report)
 	case "md":
 		return formatMarkdown(report, opts), nil
+	case "github":
+		return formatGitHub(report, opts), nil
 	default:
-		return "", fmt.Errorf("unknown format %q: must be text, json, sarif, or md", format)
+		return "", fmt.Errorf("unknown format %q: must be text, json, sarif, md, or github", format)
 	}
 }
 
@@ -160,6 +162,12 @@ func summaryRows(r *domain.Report) []metricRow {
 			md:   fmt.Sprintf("Skipped (binary) | %d", r.SkippedFiles),
 		})
 	}
+	if r.SkippedLargeFiles > 0 {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("Skipped files : %d (over --max-file-size)", r.SkippedLargeFiles),
+			md:   fmt.Sprintf("Skipped (oversized) | %d", r.SkippedLargeFiles),
+		})
+	}
 	rows = append(rows, metricRow{
 		text: fmt.Sprintf("Total lines   : %d", r.TotalLines),
 		md:   fmt.Sprintf("Total lines | %d", r.TotalLines),
@@ -179,6 +187,18 @@ func summaryRows(r *domain.Report) []metricRow {
 		text: fmt.Sprintf("Duplicate lines: %d (%.1f%%)", r.DuplicateLines, r.DuplicationPct),
 		md:   fmt.Sprintf("Duplicate lines | %d (%.1f%%)", r.DuplicateLines, r.DuplicationPct),
 	})
+	if r.SavedLines > 0 {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("Refactor value: ~%d lines removable by deduplication", r.SavedLines),
+			md:   fmt.Sprintf("Refactor value | ~%d lines removable", r.SavedLines),
+		})
+	}
+	if r.BaselineFile != "" {
+		rows = append(rows, metricRow{
+			text: fmt.Sprintf("Baseline      : %d known (accepted debt), %d NEW", r.BaselineKnown, r.BaselineNew),
+			md:   fmt.Sprintf("Baseline (%s) | %d known, **%d new**", r.BaselineFile, r.BaselineKnown, r.BaselineNew),
+		})
+	}
 	if r.SinceDiffRef != "" {
 		rows = append(rows, metricRow{
 			text: fmt.Sprintf("New clones    : %d since %s", len(r.NewClones), r.SinceDiffRef),
@@ -219,6 +239,9 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 
 	fmt.Fprintf(&b, "dupehound scan results\n")
 	fmt.Fprintf(&b, "======================\n")
+	if report.Partial {
+		fmt.Fprintf(&b, "!! PARTIAL RESULT: %s\n", report.PartialReason)
+	}
 	if report.SinceDiffRef != "" {
 		fmt.Fprintf(&b, "Scanning diff  : since %s  (%d files changed)\n", report.SinceDiffRef, report.SinceDiffFiles)
 	}
@@ -231,7 +254,7 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 		return b.String()
 	}
 
-	if report.TotalClones > 0 {
+	if len(report.Clones) > 0 {
 		fmt.Fprintf(&b, "Breakdown     : %s\n", typeBreakdown(report.Clones))
 	}
 
@@ -248,7 +271,7 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 		}
 	}
 
-	if report.TotalClones > 0 {
+	if len(report.Clones) > 0 {
 		testProdClones, normalClones := sortedPartition(report, opts)
 
 		if len(testProdClones) > 0 {
@@ -277,12 +300,18 @@ func formatText(report *domain.Report, opts FormatOptions) string {
 }
 
 // cloneBadges builds the inline badge string for a clone in text output —
-// includes suppressed and churn signals (test↔prod is rendered separately
-// inside writeCloneTextWithTag).
+// includes scope, suppression, baseline, and churn signals (test↔prod is
+// rendered separately inside writeCloneTextWithTag).
 func cloneBadges(c domain.Clone) string {
 	tag := ""
+	if c.Scope != "" {
+		tag += fmt.Sprintf(" [%s]", c.Scope)
+	}
 	if c.Suppressed {
 		tag += " [suppressed]"
+	}
+	if c.Baseline {
+		tag += " [baseline]"
 	}
 	if c.ChurnScore > 0 {
 		tag += fmt.Sprintf(" [churn: %d commits]", c.ChurnScore)
@@ -290,13 +319,27 @@ func cloneBadges(c domain.Clone) string {
 	return tag
 }
 
+// instanceLabel renders the location of one clone instance with its enclosing
+// function, e.g. "services/foo.go:10-42 (in parseConfig)".
+func instanceLabel(inst domain.CloneInstance, scanPath string) string {
+	s := fmt.Sprintf("%s:%d-%d", relPath(inst.File, scanPath), inst.StartLine, inst.EndLine)
+	if inst.Function != "" {
+		s += fmt.Sprintf(" (in %s)", inst.Function)
+	}
+	return s
+}
+
 func writeCloneTextWithTag(b *strings.Builder, num int, c domain.Clone, opts FormatOptions, showPreview bool, tag string) {
 	testProdLabel := ""
 	if c.TestProdSpan {
 		testProdLabel = " [test↔prod]"
 	}
-	fmt.Fprintf(b, "  #%-4d %s  similarity: %.2f  %d lines  %d tokens  %d instances%s%s\n",
-		num, c.Type, c.Similarity, c.LineCount, c.TokenCount, len(c.Instances), testProdLabel, tag)
+	savesLabel := ""
+	if c.SavedLines > 0 {
+		savesLabel = fmt.Sprintf("  saves ~%d lines", c.SavedLines)
+	}
+	fmt.Fprintf(b, "  #%-4d %s  similarity: %.2f  %d lines  %d tokens  %d instances%s%s%s\n",
+		num, c.Type, c.Similarity, c.LineCount, c.TokenCount, len(c.Instances), savesLabel, testProdLabel, tag)
 	instLimit := len(c.Instances)
 	if !opts.Verbose && instLimit > maxInstancesShown {
 		instLimit = maxInstancesShown
@@ -311,7 +354,7 @@ func writeCloneTextWithTag(b *strings.Builder, num int, c domain.Clone, opts For
 		if inst.FileCommits > 0 {
 			churnLabel = fmt.Sprintf(" (%d commits)", inst.FileCommits)
 		}
-		fmt.Fprintf(b, "        %s:%d-%d%s%s\n", relPath(inst.File, opts.ScanPath), inst.StartLine, inst.EndLine, testLabel, churnLabel)
+		fmt.Fprintf(b, "        %s%s%s\n", instanceLabel(inst, opts.ScanPath), testLabel, churnLabel)
 	}
 	if len(c.Instances) > instLimit {
 		fmt.Fprintf(b, "        ... %d more locations (use --verbose to show all)\n", len(c.Instances)-instLimit)
@@ -340,6 +383,9 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "## dupehound scan results\n\n")
+	if report.Partial {
+		fmt.Fprintf(&b, "> ⚠️ **Partial result:** %s\n\n", report.PartialReason)
+	}
 	if report.SinceDiffRef != "" {
 		fmt.Fprintf(&b, "> Scanning diff since: **%s** (%d files changed)\n\n", report.SinceDiffRef, report.SinceDiffFiles)
 	}
@@ -354,12 +400,12 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 		return b.String()
 	}
 
-	if report.TotalClones > 0 {
+	if len(report.Clones) > 0 {
 		fmt.Fprintf(&b, "| Breakdown | %s |\n", typeBreakdown(report.Clones))
 	}
 
 	// --- Hotspots / clones (skip when there are no clones at all) ---
-	if report.TotalClones > 0 && len(report.FileStats) > 0 {
+	if len(report.Clones) > 0 && len(report.FileStats) > 0 {
 		limit := topN(len(report.FileStats), defaultTopHotspots, opts.Verbose)
 
 		fmt.Fprintf(&b, "\n### Hotspots\n\n")
@@ -385,7 +431,7 @@ func formatMarkdown(report *domain.Report, opts FormatOptions) string {
 	}
 
 	// --- Test↔Prod / Top clones (only when clones exist) ---
-	if report.TotalClones > 0 {
+	if len(report.Clones) > 0 {
 		testProdClones, normalClones := sortedPartition(report, opts)
 
 		if len(testProdClones) > 0 {
@@ -427,8 +473,15 @@ func writeCloneMd(b *strings.Builder, num int, c domain.Clone, opts FormatOption
 		lang = mdLangHint(c.Instances[0].File)
 	}
 
-	// Build inline badges so PR readers see test↔prod / churn / suppressed at a glance.
+	// Build inline badges so PR readers see scope / test↔prod / churn /
+	// suppression / baseline state at a glance.
 	badges := ""
+	if c.SavedLines > 0 {
+		badges += fmt.Sprintf(" &nbsp; 💾 ~%d lines", c.SavedLines)
+	}
+	if c.Scope != "" {
+		badges += fmt.Sprintf(" &nbsp; 📁 %s", c.Scope)
+	}
 	if c.TestProdSpan {
 		badges += " &nbsp; 🧪 test↔prod"
 	}
@@ -437,6 +490,9 @@ func writeCloneMd(b *strings.Builder, num int, c domain.Clone, opts FormatOption
 	}
 	if c.Suppressed {
 		badges += " &nbsp; 🚫 suppressed"
+	}
+	if c.Baseline {
+		badges += " &nbsp; 📋 baseline"
 	}
 
 	summary := fmt.Sprintf("#%d &nbsp; <code>%s</code> &nbsp; similarity: %.2f &nbsp; %d lines &nbsp; %d instances%s",
@@ -452,6 +508,9 @@ func writeCloneMd(b *strings.Builder, num int, c domain.Clone, opts FormatOption
 	for i := 0; i < instLimit; i++ {
 		inst := c.Instances[i]
 		extra := ""
+		if inst.Function != "" {
+			extra += fmt.Sprintf(" — in `%s`", inst.Function)
+		}
 		if inst.IsTest {
 			extra += " _(test)_"
 		}
@@ -551,8 +610,9 @@ type sarifReport struct {
 }
 
 type sarifRun struct {
-	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results"`
+	Tool       sarifTool      `json:"tool"`
+	Results    []sarifResult  `json:"results"`
+	Properties map[string]any `json:"properties,omitempty"`
 }
 
 type sarifTool struct {
@@ -578,8 +638,11 @@ type sarifResult struct {
 }
 
 type sarifResultProperties struct {
-	CloneType  string  `json:"cloneType"`
-	Similarity float64 `json:"similarity"`
+	CloneType   string  `json:"cloneType"`
+	Similarity  float64 `json:"similarity"`
+	Scope       string  `json:"scope,omitempty"`
+	SavedLines  int     `json:"savedLines,omitempty"`
+	Fingerprint string  `json:"fingerprint,omitempty"`
 }
 
 type sarifMessage struct {
@@ -621,13 +684,20 @@ func formatSARIF(report *domain.Report) (string, error) {
 		if clone.TestProdSpan {
 			ruleID = "DUPE002"
 		}
+		msg := fmt.Sprintf("Clone #%d (%s): %d duplicate lines across %d locations", i+1, clone.Type, clone.LineCount, len(clone.Instances))
+		if funcs := cloneFunctionList(clone); funcs != "" {
+			msg += " (" + funcs + ")"
+		}
 		results = append(results, sarifResult{
 			RuleID:    ruleID,
-			Message:   sarifMessage{Text: fmt.Sprintf("Clone #%d (%s): %d duplicate lines across %d locations", i+1, clone.Type, clone.LineCount, len(clone.Instances))},
+			Message:   sarifMessage{Text: msg},
 			Locations: locs,
 			Properties: sarifResultProperties{
-				CloneType:  clone.Type,
-				Similarity: clone.Similarity,
+				CloneType:   clone.Type,
+				Similarity:  clone.Similarity,
+				Scope:       clone.Scope,
+				SavedLines:  clone.SavedLines,
+				Fingerprint: clone.Hash,
 			},
 		})
 	}
@@ -653,7 +723,8 @@ func formatSARIF(report *domain.Report) (string, error) {
 						},
 					},
 				},
-				Results: results,
+				Results:    results,
+				Properties: sarifRunProperties(report),
 			},
 		},
 	}
@@ -663,4 +734,130 @@ func formatSARIF(report *domain.Report) (string, error) {
 		return "", fmt.Errorf("marshal sarif: %w", err)
 	}
 	return string(data), nil
+}
+
+// sarifRunProperties exposes scan-level context (partial coverage, baseline
+// ratchet state) so SARIF consumers can tell a complete scan from a capped one.
+func sarifRunProperties(report *domain.Report) map[string]any {
+	props := map[string]any{}
+	if report.Partial {
+		props["partial"] = true
+		props["partialReason"] = report.PartialReason
+	}
+	if report.BaselineFile != "" {
+		props["baselineFile"] = report.BaselineFile
+		props["baselineKnown"] = report.BaselineKnown
+		props["baselineNew"] = report.BaselineNew
+	}
+	if len(props) == 0 {
+		return nil
+	}
+	return props
+}
+
+// cloneFunctionList renders the distinct enclosing-function names of a clone's
+// instances, e.g. "in parseConfig, loadSettings", or "" when none are known.
+func cloneFunctionList(c domain.Clone) string {
+	var names []string
+	seen := map[string]bool{}
+	for _, inst := range c.Instances {
+		if inst.Function != "" && !seen[inst.Function] {
+			seen[inst.Function] = true
+			names = append(names, inst.Function)
+		}
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	return "in " + strings.Join(names, ", ")
+}
+
+// --- github format (GitHub Actions workflow-command annotations) ---
+
+// ghEscapeData escapes annotation message data per GitHub's workflow-command
+// rules: % first, then CR/LF.
+func ghEscapeData(s string) string {
+	s = strings.ReplaceAll(s, "%", "%25")
+	s = strings.ReplaceAll(s, "\r", "%0D")
+	s = strings.ReplaceAll(s, "\n", "%0A")
+	return s
+}
+
+// ghEscapeProp escapes annotation property values (title, file), which
+// additionally reserve `:` and `,`.
+func ghEscapeProp(s string) string {
+	s = ghEscapeData(s)
+	s = strings.ReplaceAll(s, ":", "%3A")
+	s = strings.ReplaceAll(s, ",", "%2C")
+	return s
+}
+
+// formatGitHub renders the report as GitHub Actions workflow commands —
+// `::warning file=…,line=…::…` — so a plain `dupehound scan --format github`
+// step produces inline PR annotations with zero SARIF/upload setup.
+// The clone cap (--top / --verbose) applies per the usual rules; every shown
+// clone annotates its primary instance and lists the duplicates in the message.
+func formatGitHub(report *domain.Report, opts FormatOptions) string {
+	var b strings.Builder
+
+	if report.Partial {
+		fmt.Fprintf(&b, "::warning title=%s::%s\n",
+			ghEscapeProp("dupehound: partial result"), ghEscapeData(report.PartialReason))
+	}
+
+	testProdClones, normalClones := sortedPartition(report, opts)
+	all := append(append([]domain.Clone{}, testProdClones...), normalClones...)
+	limit := topNWithOpt(len(all), opts)
+
+	for i := 0; i < limit; i++ {
+		c := all[i]
+		primary := c.Instances[0]
+
+		title := fmt.Sprintf("dupehound: %s clone", c.Type)
+		if c.SavedLines > 0 {
+			title += fmt.Sprintf(", ~%d lines saveable", c.SavedLines)
+		}
+		if c.TestProdSpan {
+			title += ", test<->prod"
+		}
+
+		var dups []string
+		for _, inst := range c.Instances[1:] {
+			dups = append(dups, instanceLabel(inst, opts.ScanPath))
+		}
+		msg := fmt.Sprintf("%d duplicated lines (%d instances, similarity %.2f)", c.LineCount, len(c.Instances), c.Similarity)
+		if primary.Function != "" {
+			msg += fmt.Sprintf(" in %s", primary.Function)
+		}
+		if len(dups) > 0 {
+			msg += "; duplicated at " + strings.Join(dups, ", ")
+		}
+
+		fmt.Fprintf(&b, "::warning file=%s,line=%d,endLine=%d,title=%s::%s\n",
+			ghEscapeProp(relPath(primary.File, opts.ScanPath)), primary.StartLine, primary.EndLine,
+			ghEscapeProp(title), ghEscapeData(msg))
+	}
+	if len(all) > limit {
+		fmt.Fprintf(&b, "::notice title=%s::%s\n",
+			ghEscapeProp("dupehound"),
+			ghEscapeData(fmt.Sprintf("%d more clones not annotated (raise --top or use --verbose)", len(all)-limit)))
+	}
+
+	for _, df := range report.DeadFunctions {
+		fmt.Fprintf(&b, "::warning file=%s,line=%d,title=%s::%s\n",
+			ghEscapeProp(relPath(df.File, opts.ScanPath)), df.Line,
+			ghEscapeProp("dupehound: likely-dead function"),
+			ghEscapeData(fmt.Sprintf("%s appears to have no callers (heuristic; verify before removing)", df.Name)))
+	}
+
+	summary := fmt.Sprintf("%d clones, %.1f%% duplication", report.TotalClones, report.DuplicationPct)
+	if report.SavedLines > 0 {
+		summary += fmt.Sprintf(", ~%d lines removable", report.SavedLines)
+	}
+	if report.BaselineFile != "" {
+		summary += fmt.Sprintf(" — baseline: %d known, %d new", report.BaselineKnown, report.BaselineNew)
+	}
+	fmt.Fprintf(&b, "::notice title=%s::%s\n", ghEscapeProp("dupehound summary"), ghEscapeData(summary))
+
+	return b.String()
 }

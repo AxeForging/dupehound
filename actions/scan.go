@@ -93,7 +93,14 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	// even when the user doesn't pass the flag. An explicit --max-pairs 0 still
 	// means "unlimited" for anyone who wants it.
 	opts.MaxPairs = c.Int("max-pairs")
+	// Same for max-file-size: the 5MiB default guards memory unless the user
+	// explicitly passes 0 for unlimited.
+	opts.MaxFileSize = c.Int64("max-file-size")
 	opts.ScanGenerated = c.Bool("scan-generated")
+	if c.IsSet("baseline") {
+		opts.Baseline = c.String("baseline")
+	}
+	opts.WriteBaseline = c.String("write-baseline")
 
 	services.ApplyConfigDefaults(&opts, cfg)
 
@@ -116,7 +123,7 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	if !c.IsSet("format") && cfg.Scan.Format != "" {
 		format = cfg.Scan.Format
 	}
-	validFormats := map[string]bool{"text": true, "json": true, "sarif": true, "md": true}
+	validFormats := map[string]bool{"text": true, "json": true, "sarif": true, "md": true, "github": true}
 	if !validFormats[format] {
 		return helpers.ErrInvalidFormat
 	}
@@ -185,13 +192,26 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		}
 	}
 
-	// When --since is active, exit 1 only if new clones found.
-	if opts.Since != "" {
+	// Exit-code policy, most specific mode first:
+	//   --write-baseline  → exit 0: the point is to record debt, not fail on it.
+	//   --baseline        → exit 1 only for clones NOT covered by the baseline.
+	//   --since           → exit 1 only for clones touching the diff.
+	//   default           → exit 1 when any clone is found.
+	switch {
+	case opts.WriteBaseline != "":
+		// Recorded current state as accepted debt; nothing to fail on.
+	case opts.Baseline != "":
+		if report.BaselineNew > 0 && !exitZero {
+			return helpers.ErrClonesFound
+		}
+	case opts.Since != "":
 		if len(report.NewClones) > 0 && !exitZero {
 			return helpers.ErrClonesFound
 		}
-	} else if report.TotalClones > 0 && !exitZero {
-		return helpers.ErrClonesFound
+	default:
+		if report.TotalClones > 0 && !exitZero {
+			return helpers.ErrClonesFound
+		}
 	}
 
 	// Exit 1 if dead functions found.

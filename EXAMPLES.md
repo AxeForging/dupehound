@@ -15,7 +15,9 @@ Practical, copy-pasteable recipes for the things dupehound is good at. Each sect
 | I want to… | Recipe |
 |---|---|
 | Run a fast local scan | [`dupehound scan --top 10`](#basic-scan) |
-| Block PRs that introduce new clones | [diff-aware CI](#diff-aware-scanning) |
+| Adopt dupehound on a repo with existing duplication | [baseline ratchet](#baseline-ratchet) |
+| Block PRs that introduce new clones | [diff-aware CI](#diff-aware-scanning) or [baseline ratchet](#baseline-ratchet) |
+| Get inline PR annotations without SARIF setup | [`--format github`](#github-actions-inline-annotations) |
 | Catch duplicates only in changed files | [`--staged`](#pre-commit-hook) or [`--since`](#diff-aware-scanning) |
 | Skip vendor / generated / build dirs | [`--exclude` with `**`](#filtering-files) |
 | Scan only one subtree | [`--include`](#filtering-files) |
@@ -150,6 +152,63 @@ The markdown report uses collapsible `<details>` blocks for each clone, includes
 ```
 
 Without `--exit-zero`, dupehound exits 1 when it finds clones touching the diff. Combine with `--min-duplication 5.0` to also fail on global duplication thresholds.
+</details>
+
+---
+
+## Baseline ratchet
+
+<details>
+<summary><b>Record existing duplication as accepted debt, fail only on new clones</b></summary>
+
+```sh
+# once, on main: record the current state and commit it
+dupehound scan --write-baseline .dupehound-baseline.json
+git add .dupehound-baseline.json && git commit -m "chore: dupehound baseline"
+
+# in CI or hooks: exit 1 only when clones NOT in the baseline appear
+dupehound scan --baseline .dupehound-baseline.json --quiet
+```
+
+The baseline stores stable content-based fingerprints, so moving code around,
+renaming files, or editing unrelated lines never trips it. Pasting **another**
+copy of an already-known clone *does* trip it (the instance count grew).
+
+Known clones are hidden from the output; the summary shows
+`Baseline : N known (accepted debt), M NEW`. To shrink the debt, refactor and
+re-run `--write-baseline`.
+
+You can also pin the baseline path in `.dupehound.yml` so plain `dupehound scan`
+ratchets automatically:
+
+```yaml
+scan:
+  baseline: .dupehound-baseline.json
+```
+</details>
+
+---
+
+## GitHub Actions inline annotations
+
+<details>
+<summary><b>Warnings on the exact duplicated lines — one step, no SARIF upload</b></summary>
+
+```yaml
+- name: dupehound
+  run: dupehound scan --format github --baseline .dupehound-baseline.json
+```
+
+`--format github` prints `::warning file=…,line=…,endLine=…::` workflow commands,
+which GitHub renders as inline annotations on the PR diff. Each annotation names
+the enclosing function and lists where the duplicates live:
+
+```
+::warning file=api/user.go,line=42,endLine=63,title=dupehound: type-2 clone, ~22 lines saveable::22 duplicated lines (2 instances, similarity 1.00) in loadUser; duplicated at api/order.go:18-39 (in loadOrder)
+```
+
+A `::notice` summary closes the run; a `::warning` partial-result banner leads it
+if `--max-pairs`/`--max-bucket` capped type-3 coverage.
 </details>
 
 ---

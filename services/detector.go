@@ -18,16 +18,17 @@ import (
 // loaded lazily from disk only for files that end up in detected clones.
 type TokenizedFile struct {
 	Path    string
-	Tokens  []Token // normalized token sequence (no newlines)
-	InFunc  []bool  // per-token: true if inside a function/method body
-	Ignored []bool  // per-token: true if in a dupehound:ignore annotated block
+	Tokens  []Token    // normalized token sequence (no newlines)
+	InFunc  []bool     // per-token: true if inside a function/method body
+	Ignored []bool     // per-token: true if in a dupehound:ignore annotated block
+	Funcs   []FuncSpan // function body spans with best-effort names, for clone attribution
 }
 
 // BuildTokenizedFileWithIgnore tokenizes a source file, applying inline suppression
 // markers from both the source (dupehound:ignore comments) and the ignore rules.
 func BuildTokenizedFileWithIgnore(path, content string, lang *domain.Language, rules []IgnoreRule) TokenizedFile {
 	tokens := TokenizeFileWithIgnore(content, lang)
-	inFunc := markFunctionBodies(tokens, lang)
+	inFunc, funcs := markFunctionBodies(tokens, lang)
 	ignored := markIgnoredBlocks(tokens, inFunc)
 	// Zero out InFunc for ignored tokens so detection skips them.
 	for i, ign := range ignored {
@@ -40,6 +41,7 @@ func BuildTokenizedFileWithIgnore(path, content string, lang *domain.Language, r
 		Tokens:  tokens,
 		InFunc:  inFunc,
 		Ignored: ignored,
+		Funcs:   funcs,
 	}
 }
 
@@ -82,16 +84,49 @@ func fileInScope(scope []bool, fileIdx int) bool {
 	return scope[fileIdx]
 }
 
-// DetectWithOptions finds all clone groups with full control over detection parameters.
-func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone {
+// DetectStats reports how complete a detection run was. The scan is normally
+// exhaustive; these flags flip only when a safety guard reduced type-3
+// coverage. Type-1/2 results are always complete.
+type DetectStats struct {
+	// CappedPairs is true when --max-pairs stopped fuzzy detection early:
+	// the type-3 results are a deterministic partial set.
+	CappedPairs bool
+	// BucketTruncated is true when at least one fuzzy candidate bucket was
+	// cut to --max-bucket, so some near-miss pairs were never compared.
+	BucketTruncated bool
+	// EvaluatedPairs counts the fuzzy candidate pairs actually compared.
+	EvaluatedPairs int
+}
+
+// Partial reports whether any guard reduced type-3 coverage.
+func (s DetectStats) Partial() bool { return s.CappedPairs || s.BucketTruncated }
+
+// Reason renders a human-readable explanation for a partial result, or "".
+func (s DetectStats) Reason() string {
+	switch {
+	case s.CappedPairs && s.BucketTruncated:
+		return "type-3 detection capped by --max-pairs and --max-bucket; type-1/2 results are complete"
+	case s.CappedPairs:
+		return "type-3 detection stopped at --max-pairs; type-1/2 results are complete"
+	case s.BucketTruncated:
+		return "some fuzzy candidate buckets were truncated by --max-bucket; type-1/2 results are complete"
+	default:
+		return ""
+	}
+}
+
+// DetectWithOptions finds all clone groups with full control over detection
+// parameters. The returned DetectStats reports whether any safety guard
+// (--max-pairs, --max-bucket) reduced type-3 coverage.
+func DetectWithOptions(files []TokenizedFile, opts DetectOptions) ([]domain.Clone, DetectStats) {
 	if len(files) == 0 || opts.MinTokens <= 0 {
-		return nil
+		return nil, DetectStats{}
 	}
 
 	exact := detectExact(files, opts.MinTokens, opts.InScopeFiles)
 
 	if opts.MinSimilarity >= 1.0 {
-		return exact
+		return exact, DetectStats{}
 	}
 
 	maxBucket := opts.MaxBucket
@@ -99,8 +134,8 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) []domain.Clone
 		maxBucket = 5000
 	}
 
-	fuzzy := detectFuzzy(files, opts.MinTokens, opts.MinSimilarity, maxBucket, exact, opts.InScopeFiles, opts.MaxPairs)
-	return append(exact, fuzzy...)
+	fuzzy, stats := detectFuzzy(files, opts.MinTokens, opts.MinSimilarity, maxBucket, exact, opts.InScopeFiles, opts.MaxPairs)
+	return append(exact, fuzzy...), stats
 }
 
 // detectExact finds type-1 and type-2 clones using hash-based sliding windows.
@@ -280,8 +315,16 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 
 		cloneType, similarity := classifyClone(files, starts, totalTokens)
 
+		// Fingerprint the FULL extended block (not just the seed window) so the
+		// hash is a stable, content-based identity: every instance shares the
+		// same normalized structure, so the fingerprint is independent of file
+		// order, position, and line numbers. Baseline ratcheting and hash-based
+		// suppression rules rely on this stability.
+		ref := files[starts[0].FileIdx]
+		fingerprint := hashWindow(ref.Tokens[starts[0].Pos : starts[0].Pos+totalTokens])
+
 		clones = append(clones, domain.Clone{
-			Hash:       fmt.Sprintf("%016x", cand.Hash),
+			Hash:       fmt.Sprintf("%016x", fingerprint),
 			Type:       cloneType,
 			Similarity: similarity,
 			LineCount:  lineCount,
@@ -301,9 +344,9 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 // maxPairs, if > 0, caps the number of candidate pairs evaluated; when reached,
 // detection stops at the next block boundary and returns the (deterministic)
 // partial set of type-3 matches found so far rather than discarding them.
-func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone, inScopeFiles []bool, maxPairs int) []domain.Clone {
+func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBucket int, exactClones []domain.Clone, inScopeFiles []bool, maxPairs int) ([]domain.Clone, DetectStats) {
 	if minTokens < 10 {
-		return nil
+		return nil, DetectStats{}
 	}
 
 	miniSize := int(math.Ceil(float64(minTokens) / 3))
@@ -564,9 +607,18 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 			lineCount = instances[0].EndLine - instances[0].StartLine + 1
 		}
 
-		// Build a combined hash for the pair.
+		// Content-based pair fingerprint: combine the two blocks' full token
+		// hashes in sorted order so the identity is independent of file order
+		// and position. (The old fileIdx:pos hash changed whenever ANY file was
+		// added or removed, which made baselines and hash suppression useless
+		// for type-3 clones.)
+		ha := hashWindowFull(files[ba.key.fileIdx].Tokens[ba.key.pos : ba.key.pos+minTokens])
+		hb := hashWindowFull(files[bb.key.fileIdx].Tokens[bb.key.pos : bb.key.pos+minTokens])
+		if ha > hb {
+			ha, hb = hb, ha
+		}
 		h := fnv.New64a()
-		_, _ = fmt.Fprintf(h, "%d:%d:%d:%d", ba.key.fileIdx, ba.key.pos, bb.key.fileIdx, bb.key.pos)
+		_, _ = fmt.Fprintf(h, "%016x:%016x", ha, hb)
 
 		clones = append(clones, domain.Clone{
 			Hash:       fmt.Sprintf("%016x", h.Sum64()),
@@ -578,7 +630,11 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 		})
 	}
 
-	return clones
+	return clones, DetectStats{
+		CappedPairs:     capped,
+		BucketTruncated: truncationOccurred,
+		EvaluatedPairs:  evaluated,
+	}
 }
 
 // buildInstances creates CloneInstance structs with lazy-loaded preview lines.
@@ -590,7 +646,8 @@ func buildInstances(files []TokenizedFile, starts []globalPos, totalTokens int) 
 	return instances
 }
 
-// buildSingleInstance creates a single CloneInstance with lazy preview.
+// buildSingleInstance creates a single CloneInstance with lazy preview and
+// best-effort enclosing-function attribution.
 func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) domain.CloneInstance {
 	toks := files[fileIdx].Tokens
 	startLine := toks[pos].Line
@@ -605,6 +662,7 @@ func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) d
 		File:      files[fileIdx].Path,
 		StartLine: startLine,
 		EndLine:   endLine,
+		Function:  enclosingFuncName(files[fileIdx].Funcs, pos),
 		Lines:     preview,
 	}
 }

@@ -28,14 +28,18 @@ func goldenReport() *domain.Report {
 	}
 
 	var clones []domain.Clone
-	// One test↔prod clone (its own section).
+	// One test↔prod clone (its own section), with function attribution on the
+	// instances to exercise the "(in …)" rendering.
+	tpInstances := []domain.CloneInstance{
+		inst("/repo/svc/user.go", 10, 27, "func A() {", "  do()", "}"),
+		inst("/repo/svc/user_test.go", 40, 57, "func A() {", "  do()", "}"),
+	}
+	tpInstances[0].Function = "loadUser"
+	tpInstances[1].Function = "TestLoadUser"
 	clones = append(clones, domain.Clone{
 		Hash: "tp01", Type: domain.CloneType2, Similarity: 1, LineCount: 18, TokenCount: 120,
 		TestProdSpan: true,
-		Instances: []domain.CloneInstance{
-			inst("/repo/svc/user.go", 10, 27, "func A() {", "  do()", "}"),
-			inst("/repo/svc/user_test.go", 40, 57, "func A() {", "  do()", "}"),
-		},
+		Instances:    tpInstances,
 	})
 	// One suppressed clone (only shown with ShowSuppressed).
 	clones = append(clones, domain.Clone{
@@ -72,10 +76,16 @@ func goldenReport() *domain.Report {
 		})
 	}
 
+	// Fill in the derived insight fields exactly as the scanner would.
+	annotateInsights(clones)
+
 	return &domain.Report{
-		TotalFiles: 20, ScannedFiles: 17, SkippedFiles: 2,
+		TotalFiles: 20, ScannedFiles: 17, SkippedFiles: 2, SkippedLargeFiles: 1,
 		TotalClones: len(clones), TotalLines: 3714, DuplicateLines: 197, DuplicationPct: 5.3,
+		SavedLines:       totalSavedLines(clones),
 		SuppressedClones: 1,
+		Partial:          true,
+		PartialReason:    "type-3 detection stopped at --max-pairs; type-1/2 results are complete",
 		FileStats:        stats,
 		Clones:           clones,
 		DeadFunctions:    dead,
