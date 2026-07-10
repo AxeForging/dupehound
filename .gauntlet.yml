@@ -1,0 +1,14 @@
+custom_gates:
+  # Structural findings describe repository paths and are intentionally
+  # whole-run rather than diff-suppressed.
+  structlint:
+    command: ["structlint", "validate", "--format", "github"]
+    parser: github-annotations
+    line_scoped: false
+
+  # Clone annotations carry exact source lines, so Gauntlet can suppress
+  # existing debt and block only findings touching the PR diff.
+  dupehound:
+    command: ["dupehound", "scan", "--format", "github", "--quiet"]
+    parser: github-annotations
+    line_scoped: true

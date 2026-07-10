@@ -11,43 +11,13 @@ permissions:
   pull-requests: write
 
 jobs:
-  title:
+  pr-title:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR title follows Conventional Commits
-        env:
-          TITLE: ${{ github.event.pull_request.title }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if echo "$TITLE" | grep -qE "^(feat|fix|docs|style|refactor|test|chore|build|ci|perf|revert)(\(.+\))?(!)?: .+"; then
-            echo "PR title is valid: $TITLE"
-            exit 0
-          fi
-
-          BODY=$(cat <<'COMMENT'
-          ### ⚠️ Invalid PR Title
-
-          PR title must follow the **Conventional Commits** format since we use squash merge:
-
-          ```
-          <type>[optional scope][!]: <description>
-          ```
-
-          **Allowed types:** `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `build`, `ci`, `perf`, `revert`
-
-          **Examples:**
-          - `feat: add new feature`
-          - `fix(detector): resolve false positive on empty files`
-          - `feat!: breaking change`
-          - `chore(deps): update dependencies`
-          COMMENT
-          )
-
-          gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
-            -X POST -f body="$BODY"
-
-          echo "::error::PR title must follow Conventional Commits format"
-          exit 1
+      - uses: AxeForging/reusable-workflows/actions/pr-title-lint@291855e85ec985d1d318df82b8f9dce969b76933
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pr-title: ${{ github.event.pull_request.title }}
 
   review:
     runs-on: ubuntu-latest
@@ -68,48 +38,24 @@ jobs:
           REVIEW_RULES: concise
           CUSTOM_RULES_FILE: .github/reviewforge-rules.txt
 
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: AxeForging/structlint@main
-        with:
-          config: .structlint.yaml
-          comment-on-pr: "true"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  dupehound:
+  gauntlet:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # --since needs git history to resolve the base ref. Default
-          # checkout depth is 1 which would make rev-parse fail.
           fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
           cache: true
-      - name: Build dupehound
-        run: make build-local
-      - name: Run dupehound scan
-        env:
-          BASE_REF: ${{ github.base_ref }}
+      - name: Install dupehound under test
+        run: go install .
+      - name: Install structural gate
+        run: go install github.com/AxeForging/structlint@v0.6.0
+      - uses: AxeForging/gauntlet@v0.1.0
+        with:
+          since: origin/${{ github.base_ref }}
+      - name: Run vulnerability scan
         run: |
-          ./dupehound scan --exit-zero --verbose --dead-code --since "origin/${BASE_REF}"
-          ./dupehound scan --exit-zero --quiet --dead-code --since "origin/${BASE_REF}" --format md > /tmp/dupehound-report.md
-          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "" >> /tmp/dupehound-report.md
-          echo "---" >> /tmp/dupehound-report.md
-          echo "<sub><a href=\"${RUN_URL}\">View full run</a> · Scanned by <a href=\"https://github.com/AxeForging/dupehound\">dupehound</a></sub>" >> /tmp/dupehound-report.md
-      - name: Comment on PR
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          BODY=$(cat /tmp/dupehound-report.md)
-          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" \
-            --jq '.[] | select(.body | startswith("## dupehound scan results")) | .id' | head -1)
-          if [ -n "$COMMENT_ID" ]; then
-            gh api "repos/${{ github.repository }}/issues/comments/$COMMENT_ID" -X DELETE
-          fi
-          gh pr comment ${{ github.event.pull_request.number }} --body "$BODY"
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
