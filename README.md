@@ -199,6 +199,19 @@ dupehound scan --min-duplication 5.0
 # exit 1 if more than 5% of lines are duplicated
 ```
 
+### Gauntlet integration
+
+Gauntlet can run dupehound as a diff-scoped custom gate using its existing GitHub
+annotation output:
+
+```yaml
+custom_gates:
+  dupehound:
+    command: ["dupehound", "scan", "--format", "github", "--quiet"]
+    parser: github-annotations
+    line_scoped: true
+```
+
 ## Pre-commit hook
 
 Use `--staged` to only check files being committed — fast, focused, no existing-debt noise:
