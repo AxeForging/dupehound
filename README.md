@@ -34,10 +34,20 @@ Go, Python, JavaScript, TypeScript, Java, Kotlin, Rust, C, C++, C#, Swift, Scala
 
 ## Install
 
-Download the binary for your platform from [Releases](https://github.com/AxeForging/dupehound/releases) or install with the install script:
+Download the binary for your platform from [Releases](https://github.com/AxeForging/dupehound/releases) or install the latest release with the checksum-verifying install script:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | sh
+```
+
+The script installs to `/usr/local/bin` when writable, otherwise to `$HOME/.local/bin`.
+It verifies the release archive against the published SHA-256 checksums.
+
+Pin a version or install somewhere other than `/usr/local/bin`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | \
+  DUPEHOUND_VERSION=v0.1.0 DUPEHOUND_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 Or build from source:
