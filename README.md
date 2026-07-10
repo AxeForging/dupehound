@@ -43,13 +43,15 @@ curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.s
 For Gauntlet or custom GitHub Actions pipelines, install without running:
 
 ```yaml
-- uses: AxeForging/dupehound/setup@v0.1.0
+- uses: AxeForging/dupehound/setup@v0.1.1
   with:
-    version: v0.1.0
+    version: v0.1.1
 ```
 
 Pin both references for reproducible CI; use `version: latest` only when
 intentionally opting into floating releases.
+
+To intentionally track the newest published release, set `version: latest`.
 
 The script installs to `/usr/local/bin` when writable, otherwise to `$HOME/.local/bin`.
 It verifies the release archive against the published SHA-256 checksums.

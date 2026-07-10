@@ -5,7 +5,7 @@ inputs:
   version:
     description: Dupehound release tag, or latest for a floating install.
     required: false
-    default: v0.1.0
+    default: v0.1.1
   install-dir:
     description: Installation directory. Empty uses RUNNER_TEMP/dupehound-bin.
     required: false
