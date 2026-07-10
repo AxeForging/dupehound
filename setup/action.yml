@@ -1,0 +1,39 @@
+name: Setup Dupehound
+description: Install a checksum-verified Dupehound release and add it to PATH.
+author: AxeForging
+inputs:
+  version:
+    description: Dupehound release tag, or latest for a floating install.
+    required: false
+    default: v0.1.0
+  install-dir:
+    description: Installation directory. Empty uses RUNNER_TEMP/dupehound-bin.
+    required: false
+    default: ""
+outputs:
+  binary:
+    description: Absolute path to the installed binary.
+    value: ${{ steps.install.outputs.binary }}
+  version:
+    description: Version reported by the installed binary.
+    value: ${{ steps.install.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        REQUESTED_VERSION: ${{ inputs.version }}
+        REQUESTED_DIR: ${{ inputs.install-dir }}
+      run: |
+        set -euo pipefail
+        install_dir="${REQUESTED_DIR:-${RUNNER_TEMP}/dupehound-bin}"
+        DUPEHOUND_VERSION="$REQUESTED_VERSION" DUPEHOUND_INSTALL_DIR="$install_dir" "$GITHUB_ACTION_PATH/../install.sh"
+        binary="$install_dir/dupehound"
+        test -x "$binary"
+        echo "$install_dir" >> "$GITHUB_PATH"
+        echo "binary=$binary" >> "$GITHUB_OUTPUT"
+        echo "version=$($binary --version | head -1)" >> "$GITHUB_OUTPUT"
+branding:
+  icon: copy
+  color: purple
