@@ -38,16 +38,6 @@ jobs:
           REVIEW_RULES: concise
           CUSTOM_RULES_FILE: .github/reviewforge-rules.txt
 
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: AxeForging/structlint@main
-        with:
-          config: .structlint.yaml
-          comment-on-pr: "true"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   gauntlet:
     runs-on: ubuntu-latest
     steps:
@@ -60,6 +50,8 @@ jobs:
           cache: true
       - name: Install dupehound under test
         run: go install .
+      - name: Install structural gate
+        run: go install github.com/AxeForging/structlint@v0.6.0
       - uses: AxeForging/gauntlet@v0.1.0
         with:
           since: origin/${{ github.base_ref }}

@@ -201,16 +201,36 @@ dupehound scan --min-duplication 5.0
 
 ### Gauntlet integration
 
-Gauntlet can run dupehound as a diff-scoped custom gate using its existing GitHub
-annotation output:
+Gauntlet owns orchestration: ordinary Go formatting, vet, lint, tests, and builds,
+plus Structlint for repository structure and Dupehound for duplication. Both custom
+gates reuse their existing GitHub annotations.
 
 ```yaml
 custom_gates:
+  structlint:
+    command: ["structlint", "validate", "--format", "github"]
+    parser: github-annotations
+    line_scoped: false
+
   dupehound:
     command: ["dupehound", "scan", "--format", "github", "--quiet"]
     parser: github-annotations
     line_scoped: true
 ```
+
+Install the released tools and run the same contract locally:
+
+```sh
+go install github.com/AxeForging/gauntlet/cmd/gauntlet@v0.1.0
+go install github.com/AxeForging/structlint@v0.6.0
+go install github.com/AxeForging/dupehound@v0.1.0
+gauntlet check
+gauntlet check --staged --format agent
+```
+
+Structlint is whole-run because structural violations often have no source line.
+Dupehound is line-scoped, so diff runs suppress existing clone debt while blocking
+duplication introduced on changed lines.
 
 ## Pre-commit hook
 
