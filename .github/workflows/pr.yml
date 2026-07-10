@@ -59,3 +59,20 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
+
+  setup-action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: setup
+        uses: ./setup
+        with:
+          version: v0.1.0
+      - name: Verify setup outputs and executable
+        env:
+          BINARY: ${{ steps.setup.outputs.binary }}
+          VERSION: ${{ steps.setup.outputs.version }}
+        run: |
+          test -x "$BINARY"
+          test -n "$VERSION"
+          test "$(command -v dupehound)" = "$BINARY"

@@ -8,6 +8,7 @@ dir_structure:
     - "integration/**"
     - ".github/**"
     - "docs/**"
+    - "setup/**"
   disallowedPaths:
     - "vendor/**"
     - "node_modules/**"

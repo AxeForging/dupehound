@@ -40,6 +40,17 @@ Download the binary for your platform from [Releases](https://github.com/AxeForg
 curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | sh
 ```
 
+For Gauntlet or custom GitHub Actions pipelines, install without running:
+
+```yaml
+- uses: AxeForging/dupehound/setup@v0.1.0
+  with:
+    version: v0.1.0
+```
+
+Pin both references for reproducible CI; use `version: latest` only when
+intentionally opting into floating releases.
+
 The script installs to `/usr/local/bin` when writable, otherwise to `$HOME/.local/bin`.
 It verifies the release archive against the published SHA-256 checksums.
 
