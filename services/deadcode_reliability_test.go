@@ -348,6 +348,29 @@ func TestDeadCode_ClassAndCFamilyDefinitions(t *testing.T) {
 			want: []string{"a.c:parse"},
 		},
 		{
+			name: "c prototype without a body is a declaration, not a definition",
+			sources: map[string]string{
+				"api.c": "int declared_elsewhere(int x);\n\nstruct point {\n    int x;\n};\n\nextern int also_declared(int x);\n\nenum mode { A, B };\n\nint used(int x) {\n    return x;\n}\n\nint main(void) {\n    return used(1);\n}\n",
+			},
+			want: []string{},
+		},
+		{
+			name: "java private method with the same name in another class does not hide a dead one",
+			sources: map[string]string{
+				"A.java": "package app;\n\nclass A {\n    private int helper(int x) {\n        return x;\n    }\n}\n",
+				"B.java": "package app;\n\nclass B {\n    private int helper(int x) {\n        return x;\n    }\n\n    public static void main(String[] args) {\n        new B().helper(1);\n    }\n}\n",
+			},
+			want: []string{"A.java:helper"},
+		},
+		{
+			name: "typescript private method with the same name in another class does not hide a dead one",
+			sources: map[string]string{
+				"a.ts": "import { x } from 'x';\n\nexport class A {\n  private helper(v: number): number {\n    return v;\n  }\n}\n\nnew A();\n",
+				"b.ts": "import { A } from './a';\n\nexport class B {\n  private helper(v: number): number {\n    return v;\n  }\n\n  run(): number {\n    return this.helper(1);\n  }\n}\n\nnew B().run();\n",
+			},
+			want: []string{"a.ts:helper"},
+		},
+		{
 			// Found in redis: 500+ `static inline` helpers in headers were
 			// reported, because a header's functions are used by its includers.
 			name: "c static function in a header is used by the files that include it",
