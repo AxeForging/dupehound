@@ -156,6 +156,11 @@ type DetectOptions struct {
 	// boundary and returns the matches found so far (a deterministic PARTIAL
 	// result); type-1/2 clones are unaffected. 0 means no cap.
 	MaxPairs int
+	// MaxFuzzyBytes, if > 0, is the memory type-3 detection may use. When its
+	// index would not fit, type-3 detection is skipped as a whole — a
+	// predictable result, unlike analysing whichever files happened to come
+	// first — and the result is marked partial. 0 means no limit.
+	MaxFuzzyBytes int64
 	// InScopeFiles, when non-nil, restricts detection to clones where at
 	// least one instance is in a file marked true. Indexed by the position
 	// of the file in the `files` slice passed to DetectWithOptions. The
@@ -188,16 +193,21 @@ type DetectStats struct {
 	// BucketTruncated is true when at least one fuzzy candidate bucket was
 	// cut to --max-bucket, so some near-miss pairs were never compared.
 	BucketTruncated bool
+	// MemoryLimited is true when type-3 detection was skipped because its
+	// index would not fit in --max-memory.
+	MemoryLimited bool
 	// EvaluatedPairs counts the fuzzy candidate pairs actually compared.
 	EvaluatedPairs int
 }
 
 // Partial reports whether any guard reduced type-3 coverage.
-func (s DetectStats) Partial() bool { return s.CappedPairs || s.BucketTruncated }
+func (s DetectStats) Partial() bool { return s.CappedPairs || s.BucketTruncated || s.MemoryLimited }
 
 // Reason renders a human-readable explanation for a partial result, or "".
 func (s DetectStats) Reason() string {
 	switch {
+	case s.MemoryLimited:
+		return "type-3 detection skipped: it would not fit in --max-memory; type-1/2 results are complete"
 	case s.CappedPairs && s.BucketTruncated:
 		return "type-3 detection capped by --max-pairs and --max-bucket; type-1/2 results are complete"
 	case s.CappedPairs:
@@ -217,10 +227,18 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) ([]domain.Clon
 		return nil, DetectStats{}
 	}
 
-	exact := detectExact(files, opts.MinTokens, opts.InScopeFiles)
+	exact, windows := detectExact(files, opts.MinTokens, opts.InScopeFiles)
 
 	if opts.MinSimilarity >= 1.0 {
 		return exact, DetectStats{}
+	}
+
+	if need := fuzzyIndexBytes(windows, opts.MinTokens); opts.MaxFuzzyBytes > 0 && need > opts.MaxFuzzyBytes {
+		helpers.Log.Warn().
+			Str("needed", formatBytes(need)).
+			Str("available", formatBytes(opts.MaxFuzzyBytes)).
+			Msg("type-3 detection skipped: it would not fit in --max-memory (type-1/2 results are complete; raise --max-memory to include type-3)")
+		return exact, DetectStats{MemoryLimited: true}
 	}
 
 	maxBucket := opts.MaxBucket
@@ -235,30 +253,36 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) ([]domain.Clon
 // detectExact finds type-1 and type-2 clones using hash-based sliding windows.
 // inScopeFiles, if non-nil, causes the detector to skip clone groups where
 // no participating file is in scope (used by --since for diff-aware scanning).
-func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []domain.Clone {
+// It also returns the number of in-scope windows it examined, which is what
+// sizes the type-3 index.
+func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) ([]domain.Clone, int) {
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
-	// Skip windows that are not fully inside a function body.
+	// Windows that are not fully inside a function body hash to 0 and are skipped.
 	posToHash := make([][]uint64, len(files))
+	windows := 0
 	for fi, tf := range files {
-		n := len(tf.Tokens)
-		hashes := make([]uint64, n)
-		for i := 0; i+minTokens <= n; i++ {
-			if !windowInFunc(tf.InFunc, i, minTokens) {
-				continue
+		posToHash[fi] = windowHashes(tf, minTokens)
+		for _, h := range posToHash[fi] {
+			if h != 0 {
+				windows++
 			}
-			hashes[i] = hashWindow(tf.Tokens[i : i+minTokens])
 		}
-		posToHash[fi] = hashes
 	}
 
-	// Step 2: build a global hash → positions index.
-	hashIndex := make(map[uint64][]globalPos)
+	// Step 2: build a global hash → positions index, but only for hashes that
+	// occur at least twice. Most windows in a codebase are unique, and giving
+	// each of them a map entry was the bulk of this function's memory. Sorting
+	// a flat copy of the hashes finds the repeated ones at 8 bytes per window.
+	repeated := repeatedHashes(posToHash, windows)
+	hashIndex := make(map[uint64][]globalPos, len(repeated))
 	for fi, hashes := range posToHash {
 		for pi, h := range hashes {
 			if h == 0 {
 				continue
 			}
-			hashIndex[h] = append(hashIndex[h], globalPos{fi, pi})
+			if _, ok := repeated[h]; ok {
+				hashIndex[h] = append(hashIndex[h], globalPos{fi, pi})
+			}
 		}
 	}
 
@@ -288,12 +312,15 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 
 	// Step 4: sweep left-to-right. For each uncovered candidate, gather its group,
 	// extend the block as far as all members agree, then mark the block as covered.
-	covered := make(map[globalPos]bool)
+	covered := make([][]bool, len(files))
+	for fi := range files {
+		covered[fi] = make([]bool, len(posToHash[fi]))
+	}
 	var clones []domain.Clone
 
 	for _, cand := range candidates {
 		gp := globalPos{cand.FileIdx, cand.Pos}
-		if covered[gp] {
+		if covered[gp.FileIdx][gp.Pos] {
 			continue
 		}
 
@@ -302,7 +329,7 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 		// Group positions by file.
 		byFile := make(map[int][]globalPos)
 		for _, p := range allGroup {
-			if !covered[p] {
+			if !covered[p.FileIdx][p.Pos] {
 				byFile[p.FileIdx] = append(byFile[p.FileIdx], p)
 			}
 		}
@@ -361,7 +388,7 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 			if !anyInScope {
 				// Mark covered so the same hash group isn't reconsidered.
 				for _, s := range starts {
-					covered[globalPos{s.FileIdx, s.Pos}] = true
+					covered[s.FileIdx][s.Pos] = true
 				}
 				continue
 			}
@@ -398,7 +425,7 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 		// below — so the same region is never reseeded as a second group.
 		for _, s := range starts {
 			for k := 0; k <= extLen; k++ {
-				covered[globalPos{s.FileIdx, s.Pos + k}] = true
+				covered[s.FileIdx][s.Pos+k] = true
 			}
 		}
 
@@ -445,7 +472,90 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 		})
 	}
 
-	return clones
+	return clones, windows
+}
+
+// rollingBase is the multiplier of the polynomial window hash. Any odd
+// constant with well-mixed bits works; this is the 64-bit golden ratio.
+const rollingBase = 0x9E3779B97F4A7C15
+
+// tokenSymbol reduces a token to the 64-bit value detection compares: its kind,
+// plus its text for keywords and operators. Identifiers and literals carry no
+// text, so they all share one symbol per kind — which is what makes a renamed
+// copy hash the same as the original.
+func tokenSymbol(t Token) uint64 {
+	const offset, prime = 14695981039346656037, 1099511628211
+	h := (uint64(offset) ^ uint64(t.Kind)) * prime
+	for i := 0; i < len(t.Text); i++ {
+		h = (h ^ uint64(t.Text[i])) * prime
+	}
+	return h
+}
+
+// windowHashes returns, for every position in tf, the hash of the minTokens
+// tokens starting there — or 0 when the window runs off the file or is not
+// entirely inside a function body.
+//
+// It is a rolling hash: each window is derived from the previous one in
+// constant time, instead of rehashing all minTokens tokens at every position.
+func windowHashes(tf TokenizedFile, minTokens int) []uint64 {
+	n := len(tf.Tokens)
+	hashes := make([]uint64, n)
+	if n < minTokens {
+		return hashes
+	}
+	// topPower is rollingBase^(minTokens-1): the weight of the token leaving
+	// the window.
+	topPower := uint64(1)
+	for i := 1; i < minTokens; i++ {
+		topPower *= rollingBase
+	}
+	masked := len(tf.InFunc) > 0
+	var h uint64
+	inFunc := 0 // tokens of the current window that are inside a function
+	for i := 0; i < n; i++ {
+		if i >= minTokens {
+			h -= tokenSymbol(tf.Tokens[i-minTokens]) * topPower
+			if masked && tf.InFunc[i-minTokens] {
+				inFunc--
+			}
+		}
+		h = h*rollingBase + tokenSymbol(tf.Tokens[i])
+		if masked && tf.InFunc[i] {
+			inFunc++
+		}
+		start := i - minTokens + 1
+		if start < 0 || (masked && inFunc != minTokens) {
+			continue
+		}
+		if h == 0 {
+			hashes[start] = 1 // 0 is reserved for "no window here"
+		} else {
+			hashes[start] = h
+		}
+	}
+	return hashes
+}
+
+// repeatedHashes returns the set of window hashes that occur at more than one
+// position across all files.
+func repeatedHashes(posToHash [][]uint64, windows int) map[uint64]struct{} {
+	all := make([]uint64, 0, windows)
+	for _, hashes := range posToHash {
+		for _, h := range hashes {
+			if h != 0 {
+				all = append(all, h)
+			}
+		}
+	}
+	slices.Sort(all)
+	repeated := make(map[uint64]struct{})
+	for i := 1; i < len(all); i++ {
+		if all[i] == all[i-1] {
+			repeated[all[i]] = struct{}{}
+		}
+	}
+	return repeated
 }
 
 // dropOverlappingStarts keeps only the instances of one clone group that do not
@@ -528,6 +638,10 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 
 	for fi, tf := range files {
 		n := len(tf.Tokens)
+		// Neighbouring blocks share all but one of their mini-windows, so each
+		// mini-window is hashed once here and reused by every block covering it.
+		// Hashing them per block did the same work minTokens times over.
+		var miniHashes []uint64
 		for pos := 0; pos+minTokens <= n; pos++ {
 			// Skip blocks not fully inside a function body.
 			if !windowInFunc(tf.InFunc, pos, minTokens) {
@@ -557,9 +671,14 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 			// Uses hashWindowFull (includes OrigText) so that different
 			// identifiers/literals produce different mini-hashes,
 			// enabling meaningful Jaccard comparison.
+			if miniHashes == nil {
+				miniHashes = make([]uint64, n-miniSize+1)
+				for i := range miniHashes {
+					miniHashes[i] = hashWindowFull(tf.Tokens[i : i+miniSize])
+				}
+			}
 			miniSet := make([]uint64, 0, minTokens-miniSize+1)
-			for i := pos; i+miniSize <= pos+minTokens; i++ {
-				h := hashWindowFull(tf.Tokens[i : i+miniSize])
+			for _, h := range miniHashes[pos : pos+minTokens-miniSize+1] {
 				if h != 0 {
 					miniSet = append(miniSet, h)
 				}

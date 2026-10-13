@@ -40,6 +40,7 @@ type ScanOptions struct {
 	ScanGenerated  bool    // when true, do NOT skip machine-generated files (default: skip them)
 	Baseline       string  // path to a baseline file: known clones become recorded debt, only new ones fail
 	WriteBaseline  string  // path to write a new baseline capturing the current clones as accepted debt
+	MaxMemory      int64   // memory budget in bytes (0 = no budget); see memoryBudget
 }
 
 // ScannerService performs code duplication detection.
@@ -92,6 +93,9 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 	scannedFiles := 0
 	skippedFiles := 0
 	fileLineCount := make(map[string]int) // path → total lines
+
+	budget := newMemoryBudget(opts.MaxMemory)
+	defer budget.release()
 
 	skippedLarge := 0
 	for _, path := range files {
@@ -152,10 +156,23 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 			continue
 		}
 
+		// Fail before the machine does. The check runs as files are read, so a
+		// tree far too large for the budget is rejected early.
+		budget.add(len(data), len(tf.Tokens))
+		if budget.exceeded() {
+			return nil, fmt.Errorf("%w: needs more than %s after %d of %d files (raise --max-memory, or narrow the scan with --include / --exclude)",
+				helpers.ErrMemoryBudget, formatBytes(opts.MaxMemory), scannedFiles+1, len(files))
+		}
+
 		tokenizedFiles = append(tokenizedFiles, tf)
 		scannedFiles++
 		helpers.Log.Debug().Str("file", path).Int("tokens", len(tf.Tokens)).Msg("tokenized")
 	}
+
+	helpers.Log.Debug().
+		Str("estimate", formatBytes(budget.estimate)).
+		Str("budget", formatBytes(opts.MaxMemory)).
+		Msg("memory estimate for exact detection")
 
 	minSimilarity := opts.MinSimilarity
 	if minSimilarity <= 0 {
@@ -227,6 +244,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		MinSimilarity: minSimilarity,
 		MaxBucket:     opts.MaxBucket,
 		MaxPairs:      opts.MaxPairs,
+		MaxFuzzyBytes: budget.remaining(),
 		InScopeFiles:  inScopeFiles,
 	})
 	clones = deduplicateOverlapping(clones)

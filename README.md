@@ -103,6 +103,10 @@ Options:
   --max-file-size      Skip files larger than this many bytes BEFORE reading them
                        [default: 5242880 (5MiB), 0 = unlimited]; oversized files are
                        almost always minified/generated and would dominate memory
+  --max-memory         Memory budget, e.g. 2G or 512M [default: auto = half of system or
+                       container memory, 0 = unlimited]. Type-3 detection is skipped when
+                       it would not fit (partial result); a scan that cannot fit at all
+                       stops with an error instead of being killed by the OS
   --baseline           Compare against a baseline file: recorded clones are accepted
                        debt, only NEW clones (or grown instance counts) fail the scan
   --write-baseline     Write current clones to a baseline file (accepted debt) and
@@ -315,7 +319,7 @@ Every clone instance is attributed to its **enclosing function** (`api/user.go:4
 - **scope** — `same-file` (trivial extraction), `cross-file` (same directory), or `cross-dir` (usually needs a shared package)
 - a stable **content-based fingerprint** (`hash`) usable in `.dupehound-ignore` suppression rules and baselines
 
-If a safety guard reduced type-3 coverage (`--max-pairs`, `--max-bucket`), every format carries an explicit **partial result** marker (`!! PARTIAL RESULT` banner, `partial`/`partial_reason` JSON fields, SARIF run properties) — type-1/2 results are always complete.
+If a safety guard reduced type-3 coverage (`--max-pairs`, `--max-bucket`, `--max-memory`), every format carries an explicit **partial result** marker (`!! PARTIAL RESULT` banner, `partial`/`partial_reason` JSON fields, SARIF run properties) — type-1/2 results are always complete.
 
 ## Exit codes
 

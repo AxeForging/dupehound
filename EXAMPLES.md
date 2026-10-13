@@ -423,7 +423,12 @@ In the markdown report, churn shows up as a `🔥 churn N` badge on the clone su
 dupehound scan --dead-code --top 20
 ```
 
-The heuristic: identify function definitions, then check whether each function's name token appears anywhere else in the codebase (excluding the definition site itself). Functions with zero external references are reported as likely dead.
+The heuristic: collect function definitions, then look for any other mention of each name — in source, in string literals, and in templates, config and docs. It matches names; it does not resolve calls. Every rule therefore leans toward "used".
+
+Two things make it more than a repo-wide grep:
+
+- **Reach.** A function is only searched for where it can be called from: an unexported Go function in its package, a private Rust function in its crate tree, a non-exported JS/TS function in its module file. A common name in another package no longer hides a dead one.
+- **Callers you never write.** `main`, `init`, test and benchmark functions, xUnit hooks, exported Go methods, Rust trait methods, decorated Python functions and Python overrides of a base class from outside the repository are never reported.
 
 ```
 Dead functions : 12
@@ -433,13 +438,21 @@ Note: dead function detection is a heuristic. Cross-package calls, reflection, a
   ...
 ```
 
-**Known false positives** — review before deleting:
+Each finding carries a `confidence` in JSON output, and high-confidence findings are listed first:
 
-- HTTP / RPC handlers registered by string name
-- Test fixtures referenced by reflection (`testify` table-driven tests, etc.)
-- Interface implementations called through the interface
-- Functions exported for use by another module
-- Plugin entry points
+- `high` — the function is private to code that was scanned, and nothing there mentions it.
+- `low` — the function is public. Nothing in the repository uses it, but callers outside it might; treat these as "unused export", not "dead".
+
+```sh
+# Only the findings worth acting on without further thought
+dupehound scan --dead-code --exit-zero -f json | jq '.dead_functions[] | select(.confidence == "high")'
+```
+
+**Still not seen** — review before deleting:
+
+- Go functions reached only through `//go:linkname`
+- Names assembled at runtime (`getattr(obj, "handle_" + kind)`)
+- JS/TS class methods, and definitions in C, C++, Java, C# and Dart, where detection is coarse
 
 The output is capped via `--top` (default 10) with a `... N more` overflow note.
 </details>

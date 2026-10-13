@@ -30,12 +30,16 @@ const (
 // OrigText is only set for TokIdent, TokNumber, and TokString (original source
 // text, used after detection to classify clones as type-1 vs type-2).
 // It is empty for Keyword/Operator.
+//
+// Field order matters: there is one Token per lexed token of the whole
+// repository, and keeping the two one-byte fields together saves 8 bytes of
+// padding on each.
 type Token struct {
 	Kind       TokenKind
+	IgnoreMark bool   // true if this token is on a dupehound:ignore annotated line marker
+	Line       int    // 1-indexed original source line
 	Text       string // empty for Ident/Number/String; verbatim for Keyword/Operator
 	OrigText   string // original text for Ident/Number/String; empty for Keyword/Operator
-	Line       int    // 1-indexed original source line
-	IgnoreMark bool   // true if this token is on a dupehound:ignore annotated line marker
 }
 
 // ignoredLines returns a set of 1-indexed line numbers that are immediately
