@@ -29,7 +29,7 @@ var xunitHooks = strSet(
 
 // isFrameworkInvoked reports whether def is called by a runtime, test runner or
 // framework rather than by name from the scanned code.
-func isFrameworkInvoked(tf TokenizedFile, def FunctionDef) bool {
+func isFrameworkInvoked(tf TokenizedFile, def FunctionDef, classes map[string]bool) bool {
 	name := def.Name
 	if name == "main" {
 		return true
@@ -54,13 +54,20 @@ func isFrameworkInvoked(tf TokenizedFile, def FunctionDef) bool {
 		if inTestFile && (strings.HasPrefix(name, "test") || xunitHooks[name]) {
 			return true
 		}
-		return isPythonDecorated(tf.Tokens, def.KwTok)
+		// unittest's camelCase hooks are unmistakable wherever they appear.
+		if xunitHooks[name] && name != strings.ToLower(name) {
+			return true
+		}
+		return isPythonDecorated(tf.Tokens, def.KwTok) || overridesExternalBase(tf.Tokens, def, classes)
 	case "ruby":
 		return inTestFile && (strings.HasPrefix(name, "test_") || xunitHooks[name])
 	case "php":
 		return inTestFile && (strings.HasPrefix(name, "test") || xunitHooks[name])
 	case "rust":
-		return hasRustTestAttribute(tf.Tokens, def.KwTok)
+		// A leading underscore is Rust's own "intentionally unused" marker.
+		return strings.HasPrefix(name, "_") ||
+			hasRustRegisteringAttribute(tf.Tokens, def.KwTok) ||
+			isRustTraitMethod(tf.Tokens, def.KwTok)
 	}
 	return false
 }
@@ -109,11 +116,20 @@ func isPythonDecorated(tokens []Token, kwIdx int) bool {
 	return tokens[i].Kind == TokOperator && tokens[i].Text == "@"
 }
 
-// hasRustTestAttribute reports whether the `fn` at kwIdx carries an attribute
-// that registers it with a test or benchmark harness: `#[test]`,
-// `#[tokio::test]`, `#[bench]`, `#[rstest]`, and so on. Stacked attributes
-// (`#[test] #[should_panic]`) are all inspected.
-func hasRustTestAttribute(tokens []Token, kwIdx int) bool {
+// rustInertAttributes only affect compilation or diagnostics. Any other
+// attribute may hand the function to something that calls it without naming it:
+// a test harness (`#[test]`, `#[tokio::test]`, `#[bench]`), the linker
+// (`#[no_mangle]`), a macro framework (`#[wasm_bindgen]`, `#[pyfunction]`, a web
+// route). Listing the harmless ones is the safe direction: an attribute this
+// list has never heard of keeps the function out of the report.
+var rustInertAttributes = strSet(
+	"inline", "allow", "warn", "deny", "expect", "forbid", "cfg", "cfg_attr", "doc",
+	"must_use", "cold", "track_caller", "deprecated", "rustfmt", "clippy", "derive",
+)
+
+// hasRustRegisteringAttribute reports whether the `fn` at kwIdx carries an
+// attribute outside rustInertAttributes. Stacked attributes are all inspected.
+func hasRustRegisteringAttribute(tokens []Token, kwIdx int) bool {
 	isOp := func(i int, text string) bool {
 		return i >= 0 && tokens[i].Kind == TokOperator && tokens[i].Text == text
 	}
@@ -134,16 +150,169 @@ func hasRustTestAttribute(tokens []Token, kwIdx int) bool {
 				}
 			}
 		}
-		if open < 1 || !isOp(open-1, "#") {
+		if open < 1 || !isOp(open-1, "#") || open+1 >= i {
 			return false
 		}
-		for k := open + 1; k < i; k++ {
-			word := tokens[k].OrigText + tokens[k].Text
-			if strings.Contains(word, "test") || strings.Contains(word, "bench") {
-				return true
-			}
+		if first := tokens[open+1]; !rustInertAttributes[first.OrigText+first.Text] {
+			return true
 		}
 		i = open - 2
+	}
+	return false
+}
+
+// isRustTraitMethod reports whether the `fn` at kwIdx is declared in a `trait`
+// block or an `impl Trait for Type` block. Both are reached through the trait —
+// operators, `Display`, `Future::poll` — so their names need never appear at a
+// call site.
+func isRustTraitMethod(tokens []Token, kwIdx int) bool {
+	// Check every enclosing block, innermost first: a method can sit inside a
+	// macro invocation that is itself inside the trait.
+	for at := kwIdx; ; {
+		open := enclosingOpenBrace(tokens, at)
+		if open < 0 {
+			return false
+		}
+		// Read the block header backwards to the previous item.
+		sawFor := false
+	header:
+		for i := open - 1; i >= 0; i-- {
+			tok := tokens[i]
+			if tok.Kind == TokOperator && (tok.Text == "}" || tok.Text == ";" || tok.Text == "{") {
+				break
+			}
+			switch tok.Text + tok.OrigText {
+			case "for":
+				sawFor = true
+			case "trait":
+				return true
+			case "impl":
+				if sawFor {
+					return true
+				}
+				break header
+			}
+		}
+		at = open
+	}
+}
+
+// enclosingOpenBrace returns the index of the `{` whose block contains the
+// token at idx, or -1 at the top level.
+func enclosingOpenBrace(tokens []Token, idx int) int {
+	depth := 0
+	for i := idx - 1; i >= 0; i-- {
+		if tokens[i].Kind != TokOperator {
+			continue
+		}
+		switch tokens[i].Text {
+		case "}":
+			depth++
+		case "{":
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
+	}
+	return -1
+}
+
+// repoClassNames returns the names of the classes defined in files.
+func repoClassNames(files []TokenizedFile) map[string]bool {
+	names := make(map[string]bool)
+	for _, tf := range files {
+		for i := 0; i+1 < len(tf.Tokens); i++ {
+			if tf.Tokens[i].Kind == TokKeyword && tf.Tokens[i].Text == "class" && tf.Tokens[i+1].Kind == TokIdent {
+				names[tf.Tokens[i+1].OrigText] = true
+			}
+		}
+	}
+	return names
+}
+
+// overridesExternalBase reports whether the Python method def belongs to a
+// class that inherits from something not defined in the scanned code. Such a
+// method may be a hook the outside base class calls — `logging.Handler.emit`,
+// `HTMLParser.handle_starttag`, `ast.NodeVisitor.visit_Name` — and nothing in
+// the repository would mention it. A method on a class whose bases are all
+// local is not exempt: if it overrides anything, the name appears on the base.
+func overridesExternalBase(tokens []Token, def FunctionDef, classes map[string]bool) bool {
+	// Only methods: the first parameter is self or cls.
+	p := def.DefTok + 2
+	if p >= len(tokens) || (tokens[p].OrigText != "self" && tokens[p].OrigText != "cls") {
+		return false
+	}
+	// The enclosing class is the nearest `class` statement above.
+	c := def.KwTok - 1
+	for c >= 0 && (tokens[c].Kind != TokKeyword || tokens[c].Text != "class") {
+		c--
+	}
+	if c < 0 || c+2 >= len(tokens) || tokens[c+2].Text != "(" {
+		return false
+	}
+	end := matchDelimiter(tokens, c+2, "(", ")")
+	for i := c + 3; i < end; i++ {
+		tok := tokens[i]
+		if tok.Kind != TokIdent {
+			continue
+		}
+		next := tokens[i+1]
+		if next.Kind == TokOperator && (next.Text == "." || next.Text == "=") {
+			continue // a module qualifier, or a keyword argument such as metaclass=
+		}
+		if prev := tokens[i-1]; prev.Kind == TokOperator && prev.Text == "=" {
+			continue // the value of a keyword argument
+		}
+		if tok.OrigText != "object" && !classes[tok.OrigText] {
+			return true
+		}
+	}
+	return false
+}
+
+// visibilityOf works out how far def can be called from.
+func visibilityOf(tf TokenizedFile, def FunctionDef) defVisibility {
+	toks := tf.Tokens
+	switch def.Lang {
+	case "go":
+		if !isExportedName(def.Name) {
+			return visDir
+		}
+	case "rust":
+		// Private unless `pub` sits between the previous item and `fn`.
+		for i := def.KwTok - 1; i >= 0; i-- {
+			tok := toks[i]
+			if tok.Kind == TokOperator && (tok.Text == "}" || tok.Text == ";" || tok.Text == "{" || tok.Text == "]") {
+				break
+			}
+			if tok.Text+tok.OrigText == "pub" {
+				return visRepo
+			}
+		}
+		return visTree
+	case "javascript", "typescript":
+		if !isJSModule(toks) {
+			return visRepo // a classic script: top-level functions are globals
+		}
+		for i := def.KwTok - 1; i >= 0 && toks[i].Line == toks[def.KwTok].Line; i-- {
+			if w := toks[i].Text + toks[i].OrigText; w == "export" || w == "default" {
+				return visRepo
+			}
+		}
+		return visFile
+	}
+	return visRepo
+}
+
+// isJSModule reports whether a JS/TS file uses a module system. In a module a
+// top-level function is private unless exported.
+func isJSModule(tokens []Token) bool {
+	for _, tok := range tokens {
+		switch tok.Text + tok.OrigText {
+		case "import", "export", "require", "module", "exports":
+			return true
+		}
 	}
 	return false
 }

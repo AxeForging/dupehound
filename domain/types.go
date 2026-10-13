@@ -92,7 +92,17 @@ type DeadFunc struct {
 	Line     int    `json:"line"`
 	Name     string `json:"name"`
 	Language string `json:"language"`
+	// Confidence is "high" for a function that can only be called from code
+	// that was scanned (unexported, private, module-local) and "low" for one
+	// that is public: unused here, but possibly API for callers elsewhere.
+	Confidence string `json:"confidence,omitempty"`
 }
+
+// Dead-function confidence levels.
+const (
+	ConfidenceHigh = "high"
+	ConfidenceLow  = "low"
+)
 
 // Config is the structure of a .dupehound.yml config file.
 type Config struct {

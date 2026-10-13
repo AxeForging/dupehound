@@ -1,7 +1,11 @@
 package services
 
 import (
+	"io/fs"
+	"os"
 	"path/filepath"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
@@ -15,99 +19,206 @@ type FunctionDef struct {
 	Lang   string
 	DefTok int // token index of the function name
 	KwTok  int // token index of the introducing keyword, or -1 when there is none
+	// BodyStart and BodyEnd bound the function's body in tokens (inclusive), or
+	// are both -1 when it is unknown. A reference from inside the body is the
+	// function calling itself, which does not make it used.
+	BodyStart, BodyEnd int
+	Visibility         defVisibility
 }
 
-// findDeadFunctions analyses tokenized files and returns functions whose
-// names do not appear in any token outside their own definition line.
+func (d FunctionDef) containsToken(i int) bool {
+	return d.BodyStart >= 0 && i >= d.BodyStart && i <= d.BodyEnd
+}
+
+// defVisibility is how far away a definition can be called from. Narrowing the
+// search to that reach is what lets a common name be reported: an unexported Go
+// `describe` is dead if its own package never mentions it, however many other
+// packages have a `describe` of their own.
+type defVisibility uint8
+
+const (
+	visRepo defVisibility = iota // callable from anywhere in the scanned tree
+	visTree                      // callable from the definition's directory and below
+	visDir                       // callable from the definition's directory only
+	visFile                      // callable from the definition's file only
+)
+
+// pendingDef is a definition no usage has been seen for yet.
+type pendingDef struct {
+	def  FunctionDef
+	dir  string
+	used bool
+}
+
+// deadCodeAnalysis finds functions that nothing refers to.
 //
-// defFiles is the set the user wants findings reported for (typically the
-// in-scope set after --include / --exclude). usageFiles is the broader set
-// used only to build the identifier-usage map — usually a superset of
-// defFiles that includes test files even when the user excluded them from
-// clone reporting. Passing the same slice for both is the simple "scan
-// everything" mode and matches the original single-arg behavior.
-//
-// This is a heuristic — cross-package calls and reflection produce false
-// positives. Splitting defs from usages eliminates the test-only-helper
-// false positive: a function defined in production code but called only
-// from a test file is no longer reported as dead, as long as the test file
-// is in the usageFiles set.
-func findDeadFunctions(defFiles, usageFiles []TokenizedFile) []domain.DeadFunc {
-	// Phase 1: extract all function definitions from the in-scope set only.
-	var defs []FunctionDef
+// It is built from the definitions and then fed usages one file at a time, so
+// the files that only contribute usages — generated code, excluded tests,
+// templates — never have to be held in memory together. Memory is proportional
+// to the number of definitions, not to the size of the repository.
+type deadCodeAnalysis struct {
+	all     []*pendingDef            // every definition, in report order
+	pending map[string][]*pendingDef // name → definitions still unreferenced
+}
+
+// newDeadCodeAnalysis collects the function definitions of defFiles. Nothing is
+// considered used until observeSource / observeText say so.
+func newDeadCodeAnalysis(defFiles []TokenizedFile) *deadCodeAnalysis {
+	a := &deadCodeAnalysis{pending: make(map[string][]*pendingDef)}
+	classes := repoClassNames(defFiles)
 	for _, tf := range defFiles {
 		lang := DetectLanguage(tf.Path)
 		if lang == nil {
 			continue
 		}
-		for _, def := range extractFunctionDefs(tf, lang.Name) {
-			if !isFrameworkInvoked(tf, def) {
-				defs = append(defs, def)
+		defs := extractFunctionDefs(tf, lang.Name)
+		for k, def := range defs {
+			// A body-less definition (`func f() {}`, a declaration) has no span
+			// of its own; do not let it borrow the next function's.
+			if k+1 < len(defs) && def.BodyStart > defs[k+1].DefTok {
+				def.BodyStart, def.BodyEnd = -1, -1
 			}
-		}
-	}
-
-	if len(defs) == 0 {
-		return nil
-	}
-
-	// Phase 2: build a set of all identifier tokens across the broader
-	// usage set. This is what fixes the false positive — a test-only helper
-	// will appear here even if its defining file is excluded from clone
-	// reporting.
-	type fileLineKey struct {
-		file string
-		line int
-	}
-	nameUsages := make(map[string]map[fileLineKey]bool)
-	for _, tf := range usageFiles {
-		for _, tok := range tf.Tokens {
-			if tok.Kind != TokIdent || tok.OrigText == "" {
+			if isFrameworkInvoked(tf, def, classes) {
 				continue
 			}
-			name := tok.OrigText
-			if nameUsages[name] == nil {
-				nameUsages[name] = make(map[fileLineKey]bool)
-			}
-			nameUsages[name][fileLineKey{tf.Path, tok.Line}] = true
+			def.Visibility = visibilityOf(tf, def)
+			p := &pendingDef{def: def, dir: filepath.Dir(tf.Path)}
+			a.all = append(a.all, p)
+			a.pending[def.Name] = append(a.pending[def.Name], p)
 		}
 	}
+	return a
+}
 
-	// Phase 3: for each function def, check if its name appears anywhere else.
-	var dead []domain.DeadFunc
-	for _, def := range defs {
-		usages, ok := nameUsages[def.Name]
-		if !ok {
-			// Name doesn't appear at all (only as keyword text, not ident) — dead.
-			dead = append(dead, domain.DeadFunc{
-				File:     def.File,
-				Line:     def.Line,
-				Name:     def.Name,
-				Language: def.Lang,
+// observeSource records every reference to a pending definition made by the
+// tokens of one source file: identifiers, and identifier-shaped words inside
+// string literals (reflection, `getattr`, route tables and the like name their
+// target in a string).
+func (a *deadCodeAnalysis) observeSource(path string, tokens []Token) {
+	if len(a.pending) == 0 {
+		return
+	}
+	dir := filepath.Dir(path)
+	for i, tok := range tokens {
+		switch tok.Kind {
+		case TokIdent:
+			a.reference(tok.OrigText, path, dir, i, false)
+		case TokString:
+			forEachWord(tok.OrigText, func(word string) {
+				a.reference(word, path, dir, -1, false)
 			})
+		}
+	}
+}
+
+// observeText records references made from a non-source file — a template, a
+// config file, documentation. Only definitions callable from anywhere can be
+// reached this way.
+func (a *deadCodeAnalysis) observeText(path, text string) {
+	if len(a.pending) == 0 {
+		return
+	}
+	forEachWord(text, func(word string) {
+		a.reference(word, path, "", -1, true)
+	})
+}
+
+// reference marks as used every pending definition of name that the given
+// location can reach. tokIdx is the referring token's index in its file, used to
+// tell a definition's own name token apart from a real reference.
+func (a *deadCodeAnalysis) reference(name, path, dir string, tokIdx int, textOnly bool) {
+	defs, ok := a.pending[name]
+	if !ok {
+		return
+	}
+	remaining := defs[:0]
+	for _, p := range defs {
+		if p.reachedFrom(path, dir, tokIdx, textOnly) {
+			p.used = true
+		} else {
+			remaining = append(remaining, p)
+		}
+	}
+	if len(remaining) == 0 {
+		delete(a.pending, name)
+	} else {
+		a.pending[name] = remaining
+	}
+}
+
+func (p *pendingDef) reachedFrom(path, dir string, tokIdx int, textOnly bool) bool {
+	if textOnly {
+		return p.def.Visibility == visRepo
+	}
+	if path == p.def.File && (tokIdx == p.def.DefTok || p.def.containsToken(tokIdx)) {
+		return false // the definition itself, or the function calling itself
+	}
+	switch p.def.Visibility {
+	case visFile:
+		return path == p.def.File
+	case visDir:
+		return dir == p.dir
+	case visTree:
+		return dir == p.dir || strings.HasPrefix(dir, p.dir+string(filepath.Separator))
+	default:
+		return true
+	}
+}
+
+// dead returns the definitions nothing referred to.
+func (a *deadCodeAnalysis) dead() []domain.DeadFunc {
+	var dead []domain.DeadFunc
+	for _, p := range a.all {
+		if p.used {
 			continue
 		}
-
-		// Check if there's any usage outside the definition line in the def's file.
-		hasExternalUsage := false
-		for flk := range usages {
-			if flk.file == def.File && flk.line == def.Line {
-				continue // this is the definition line itself
-			}
-			hasExternalUsage = true
-			break
+		confidence := domain.ConfidenceHigh
+		if p.def.Visibility == visRepo {
+			confidence = domain.ConfidenceLow
 		}
-		if !hasExternalUsage {
-			dead = append(dead, domain.DeadFunc{
-				File:     def.File,
-				Line:     def.Line,
-				Name:     def.Name,
-				Language: def.Lang,
-			})
+		dead = append(dead, domain.DeadFunc{
+			File: p.def.File, Line: p.def.Line, Name: p.def.Name, Language: p.def.Lang, Confidence: confidence,
+		})
+	}
+	// Certain findings first; definition order is kept within each group.
+	sort.SliceStable(dead, func(i, j int) bool {
+		return dead[i].Confidence == domain.ConfidenceHigh && dead[j].Confidence != domain.ConfidenceHigh
+	})
+	return dead
+}
+
+// findDeadFunctions analyses tokenized files and returns the functions defined
+// in defFiles that nothing in usageFiles refers to.
+//
+// defFiles is the set the user wants findings reported for; usageFiles is the
+// (usually broader) set searched for references. This is a heuristic — it
+// matches names, it does not resolve calls — so every rule errs toward calling
+// a function used.
+func findDeadFunctions(defFiles, usageFiles []TokenizedFile) []domain.DeadFunc {
+	a := newDeadCodeAnalysis(defFiles)
+	for _, tf := range usageFiles {
+		a.observeSource(tf.Path, tf.Tokens)
+	}
+	return a.dead()
+}
+
+// forEachWord calls fn for every identifier-shaped word in text.
+func forEachWord(text string, fn func(string)) {
+	start := -1
+	for i := 0; i <= len(text); i++ {
+		if i < len(text) && isIdentChar(text[i]) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			if c := text[start]; c == '_' || isLetter(c) {
+				fn(text[start:i])
+			}
+			start = -1
 		}
 	}
-
-	return dead
 }
 
 // appendFuncDef records the identifier at tf.Tokens[tokIdx] as a function
@@ -115,6 +226,17 @@ func findDeadFunctions(defFiles, usageFiles []TokenizedFile) []domain.DeadFunc {
 // per-language scanner in extractFunctionDefs.
 func appendFuncDef(defs []FunctionDef, tf TokenizedFile, langName string, kwIdx, tokIdx int) []FunctionDef {
 	tok := tf.Tokens[tokIdx]
+	bodyStart, bodyEnd := bodySpanAfter(tf.Funcs, tokIdx)
+	// The span must be this function's own: a declaration without a body, or an
+	// arrow function whose body is a bare expression, ends at a `;` or `=>`
+	// before any block opens, and whatever block comes next belongs to
+	// something else.
+	for k := tokIdx + 1; k < bodyStart-1; k++ {
+		if t := tf.Tokens[k]; t.Kind == TokOperator && (t.Text == ";" || t.Text == "=>") && tf.Tokens[k+1].Text != "{" {
+			bodyStart, bodyEnd = -1, -1
+			break
+		}
+	}
 	return append(defs, FunctionDef{
 		Name:   tok.OrigText,
 		File:   tf.Path,
@@ -122,6 +244,9 @@ func appendFuncDef(defs []FunctionDef, tf TokenizedFile, langName string, kwIdx,
 		Lang:   langName,
 		DefTok: tokIdx,
 		KwTok:  kwIdx,
+
+		BodyStart: bodyStart,
+		BodyEnd:   bodyEnd,
 	})
 }
 
@@ -129,9 +254,18 @@ func appendFuncDef(defs []FunctionDef, tf TokenizedFile, langName string, kwIdx,
 func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 	var defs []FunctionDef
 	n := len(tf.Tokens)
-	ext := strings.ToLower(filepath.Ext(tf.Path))
-	_ = ext
-
+	// bodySpanAfter binary-searches the spans, so they must be in source order.
+	byStart := func(a, b FuncSpan) int { return a.Start - b.Start }
+	if !slices.IsSortedFunc(tf.Funcs, byStart) {
+		tf.Funcs = slices.Clone(tf.Funcs)
+		slices.SortFunc(tf.Funcs, byStart)
+	}
+	if langName == "python" {
+		// Python bodies are delimited by indentation, which the token stream
+		// does not carry; the recorded spans are approximate. Without a
+		// trustworthy body there is no telling a self-call from a real one.
+		tf.Funcs = nil
+	}
 	switch langName {
 	case "go", "rust", "kotlin", "swift", "scala", "php", "ruby", "lua":
 		// Keyword-based: look for func/fn/fun/def/function keyword followed by an identifier.
@@ -144,36 +278,8 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 			if !funcKwSet[tok.Text] {
 				continue
 			}
-			// Next non-paren/non-receiver identifier is the function name.
-			for j := i + 1; j < n; j++ {
-				next := tf.Tokens[j]
-				// Skip receiver in Go: (recv Type)
-				if next.Kind == TokOperator && next.Text == "(" {
-					// Find matching close paren.
-					depth := 1
-					j++
-					for j < n && depth > 0 {
-						if tf.Tokens[j].Kind == TokOperator {
-							switch tf.Tokens[j].Text {
-							case "(":
-								depth++
-							case ")":
-								depth--
-							}
-						}
-						j++
-					}
-					j-- // outer loop will j++ again
-					continue
-				}
-				if next.Kind == TokIdent && next.OrigText != "" {
-					defs = appendFuncDef(defs, tf, langName, i, j)
-					break
-				}
-				// Stop at opening brace.
-				if next.Kind == TokOperator && (next.Text == "{" || next.Text == "(") {
-					break
-				}
+			if j := namedFuncIdent(tf.Tokens, i, langName == "go"); j >= 0 {
+				defs = appendFuncDef(defs, tf, langName, i, j)
 			}
 		}
 	case "python", "elixir":
@@ -211,6 +317,8 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 				}
 			}
 		}
+		defs = append(defs, jsAssignedFunctionDefs(tf, langName)...)
+		sort.Slice(defs, func(i, j int) bool { return defs[i].DefTok < defs[j].DefTok })
 	default:
 		// For C, C++, Java, C#, Dart: heuristic — ident followed by `(` at function depth.
 		for i := 0; i < n-1; i++ {
@@ -229,4 +337,148 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 	}
 
 	return defs
+}
+
+// bodySpanAfter returns the body of the function whose name token is nameIdx:
+// the first recorded function span that opens after it. Spans are produced in
+// source order by markFunctionBodies.
+func bodySpanAfter(funcs []FuncSpan, nameIdx int) (start, end int) {
+	i := sort.Search(len(funcs), func(i int) bool { return funcs[i].Start > nameIdx })
+	if i == len(funcs) {
+		return -1, -1
+	}
+	return funcs[i].Start, funcs[i].End
+}
+
+// jsAssignedFunctionDefs finds module-level functions written as assignments:
+// `const name = (…) => …`, `const name = async x => …`, `const name = function…`.
+// Functions assigned inside another function are locals and are left alone.
+func jsAssignedFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
+	toks := tf.Tokens
+	isOp := func(i int, text string) bool {
+		return i < len(toks) && toks[i].Kind == TokOperator && toks[i].Text == text
+	}
+	isWord := func(i int, word string) bool {
+		return i >= 0 && i < len(toks) && (toks[i].Text == word || toks[i].OrigText == word)
+	}
+	var defs []FunctionDef
+	for i := 1; i+2 < len(toks); i++ {
+		if toks[i].Kind != TokIdent || !isOp(i+1, "=") || tf.InFunc[i] {
+			continue
+		}
+		if !isWord(i-1, "const") && !isWord(i-1, "let") && !isWord(i-1, "var") {
+			continue
+		}
+		j := i + 2
+		if isWord(j, "async") {
+			j++
+		}
+		isFunc := isWord(j, "function")
+		switch {
+		case isFunc:
+		case toks[j].Kind == TokIdent && isOp(j+1, "=>"):
+			isFunc = true
+		case isOp(j, "("):
+			if closeIdx := matchDelimiter(toks, j, "(", ")"); closeIdx > 0 {
+				// `) =>` or a TS return type `): T =>`.
+				isFunc = isOp(closeIdx+1, "=>") || isOp(closeIdx+1, ":")
+			}
+		}
+		if isFunc {
+			defs = appendFuncDef(defs, tf, langName, i-1, i)
+		}
+	}
+	return defs
+}
+
+// referenceFileExts are non-source files that can name a function: templates
+// that call helpers, config that wires handlers, documentation of a public API.
+var referenceFileExts = strSet(
+	".html", ".htm", ".erb", ".haml", ".slim", ".jinja", ".jinja2", ".j2", ".twig", ".ejs", ".hbs",
+	".mustache", ".tmpl", ".tpl", ".gotmpl", ".gohtml", ".vue", ".svelte", ".astro",
+	".yml", ".yaml", ".json", ".toml", ".xml", ".ini", ".cfg", ".md", ".mdx", ".rst", ".txt", ".s",
+)
+
+// scanDeadCode reports the functions defined in defFiles that nothing under
+// root refers to.
+//
+// References are gathered from every file under root, not just the ones being
+// scanned for clones: excluded tests, generated code and templates all call
+// hand-written functions. Those extra files are read, searched and released one
+// at a time, so they add nothing to peak memory.
+func scanDeadCode(root string, defFiles []TokenizedFile, maxFileSize int64) []domain.DeadFunc {
+	a := newDeadCodeAnalysis(defFiles)
+	seen := make(map[string]bool, len(defFiles))
+	for _, tf := range defFiles {
+		seen[tf.Path] = true
+		a.observeSource(tf.Path, tf.Tokens)
+	}
+
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || len(a.pending) == 0 {
+			return nil
+		}
+		if d.IsDir() {
+			if path != root && isHiddenOrVendored(d.Name()) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if seen[path] {
+			return nil
+		}
+		lang := DetectLanguage(path)
+		if lang == nil && !referenceFileExts[strings.ToLower(filepath.Ext(path))] {
+			return nil
+		}
+		if maxFileSize > 0 {
+			if info, statErr := d.Info(); statErr != nil || info.Size() > maxFileSize {
+				return nil
+			}
+		}
+		data, readErr := os.ReadFile(path)
+		if readErr != nil || isBinaryData(data) {
+			return nil
+		}
+		if lang != nil {
+			a.observeSource(path, TokenizeFile(string(data), lang))
+		} else {
+			a.observeText(path, string(data))
+		}
+		return nil
+	})
+	return a.dead()
+}
+
+// namedFuncIdent returns the index of the name introduced by the function
+// keyword at kwIdx, or -1 when the keyword opens an anonymous function or a
+// function type: `func(x int) bool {`, `fn(i32) -> i32`, `function () use ($x)`.
+// With goReceiver set, one parenthesised receiver may precede the name.
+func namedFuncIdent(tokens []Token, kwIdx int, goReceiver bool) int {
+	isOp := func(i int, text string) bool {
+		return i < len(tokens) && tokens[i].Kind == TokOperator && tokens[i].Text == text
+	}
+	j := kwIdx + 1
+	if goReceiver {
+		if isOp(j, "(") {
+			if j = matchDelimiter(tokens, j, "(", ")") + 1; j == 0 {
+				return -1
+			}
+		}
+		// A Go declaration is `name(` or, with type parameters, `name[`.
+		if j < len(tokens) && tokens[j].Kind == TokIdent && (isOp(j+1, "(") || isOp(j+1, "[")) {
+			return j
+		}
+		return -1
+	}
+	for ; j < len(tokens); j++ {
+		tok := tokens[j]
+		if tok.Kind == TokIdent && tok.OrigText != "" {
+			return j
+		}
+		if tok.Kind == TokOperator && (tok.Text == "(" || tok.Text == "{") {
+			return -1
+		}
+	}
+	return -1
 }
