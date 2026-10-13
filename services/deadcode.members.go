@@ -136,21 +136,7 @@ func declStart(toks []Token, nameIdx int) int {
 
 // matchOpenBracket returns the index of the `[` matching the `]` at closeIdx.
 func matchOpenBracket(toks []Token, closeIdx int) int {
-	depth := 1
-	for k := closeIdx - 1; k >= 0; k-- {
-		if toks[k].Kind != TokOperator {
-			continue
-		}
-		switch toks[k].Text {
-		case "]":
-			depth++
-		case "[":
-			if depth--; depth == 0 {
-				return k
-			}
-		}
-	}
-	return -1
+	return matchOpening(toks, closeIdx, "[", "]")
 }
 
 // isDispatchedMember reports whether a member is reached without its name

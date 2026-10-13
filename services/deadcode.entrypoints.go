@@ -200,22 +200,7 @@ func isRustTraitMethod(tokens []Token, kwIdx int) bool {
 // enclosingOpenBrace returns the index of the `{` whose block contains the
 // token at idx, or -1 at the top level.
 func enclosingOpenBrace(tokens []Token, idx int) int {
-	depth := 0
-	for i := idx - 1; i >= 0; i-- {
-		if tokens[i].Kind != TokOperator {
-			continue
-		}
-		switch tokens[i].Text {
-		case "}":
-			depth++
-		case "{":
-			if depth == 0 {
-				return i
-			}
-			depth--
-		}
-	}
-	return -1
+	return matchOpening(tokens, idx, "{", "}")
 }
 
 // repoClassNames returns the names of the classes defined in files.

@@ -6,38 +6,54 @@ Scope is exactly that: duplicates and dead code.
 
 ## Where things live
 
-`main.go` and `flags.go` define the CLI. `actions/` turns flags and config into
+`main.go` and `main.flags.go` define the CLI. `actions/` turns flags and config into
 options. `domain/` holds plain types. `helpers/` holds errors, logging and
 memory sizing. Everything else is in `services/`, one concern per file:
 
 | File | Owns |
 |---|---|
-| `tokenizer.go` | The lexer: source text to tokens |
-| `tokenizer_keywords.go` | Per-language keyword tables |
-| `tokenizer_strings.go` | Multi-line strings, heredocs, Rust char literals, JS regexes |
-| `tokenizer_funcbodies.go` | Which tokens are inside a function, per language family |
-| `tokenizer_dataliterals.go` | Data-table spans (so a table is not reported as logic) |
-| `tokenizer_imports.go` | Import/include/use statements (skipped in file scope) |
-| `tokenizer_ignore.go` | Inline `dupehound:ignore` markers |
-| `detector.go` | Detection entry point, options, completeness stats |
-| `detector_file.go` | `TokenizedFile` and its per-token masks |
-| `detector_exact.go` | Type-1/2: rolling hashes, grouping, extension |
-| `detector_fuzzy.go` | Type-3: Jaccard over mini-window hashes |
-| `detector_instances.go` | Clone instances: lines, function name, preview |
-| `scanner.go` | The scan pipeline |
-| `scanner_files.go` | File walk, globs, language by extension |
-| `scanner_generated.go` | Generated and minified file detection |
-| `scanner_results.go` | De-duplication, filters, per-file stats |
-| `deadcode.go` | Dead-function analysis (definitions in, usages streamed) |
-| `deadcode_defs.go` | Finding function definitions |
-| `deadcode_entrypoints.go` | Functions a framework calls; visibility rules |
-| `memory_budget.go` | `--max-memory` estimate and enforcement |
-| `reporter.go` | text, json, sarif, md and github output |
-| `baseline.go`, `suppression.go` | Baseline ratchet, `.dupehound-ignore` |
-| `git*.go` | Staged files, diff ranges, churn |
+| `tokenizer.lexer.go` | The lexer: source text to tokens |
+| `tokenizer.keywords.go` | Per-language keyword tables |
+| `tokenizer.strings.go` | Multi-line strings, heredocs, Rust char literals, JS regexes |
+| `tokenizer.funcbodies.go` | Which tokens are inside a function, per language family |
+| `tokenizer.funcnames.go` | The name of the function a body belongs to |
+| `tokenizer.dataliterals.go` | Data-table spans (so a table is not reported as logic) |
+| `tokenizer.imports.go` | Import/include/use statements (skipped in file scope) |
+| `tokenizer.ignore.go` | Inline `dupehound:ignore` markers |
+| `detector.detect.go` | Detection entry point, options, completeness stats |
+| `detector.file.go` | `TokenizedFile` and its per-token masks |
+| `detector.exact.go` | Type-1/2: rolling hashes, grouping, extension |
+| `detector.fuzzy.go` | Type-3: Jaccard over mini-window hashes |
+| `detector.instances.go` | Clone instances: lines, function name, preview |
+| `scanner.scan.go` | The scan pipeline |
+| `scanner.files.go` | File walk, globs, language by extension |
+| `scanner.generated.go` | Generated and minified file detection |
+| `scanner.results.go` | De-duplication, filters, per-file stats |
+| `scanner.memory.go` | `--max-memory` estimate and enforcement |
+| `scanner.config.go` | `.dupehound.yml` loading and defaults |
+| `scanner.testprod.go` | Test-file recognition |
+| `deadcode.analysis.go` | Dead-function analysis (definitions in, usages streamed) |
+| `deadcode.defs.go` | Finding definitions in keyword languages |
+| `deadcode.members.go` | Finding definitions in C-family languages and JS/TS classes |
+| `deadcode.entrypoints.go` | Functions a framework calls; visibility rules |
+| `reporter.format.go` | Report entry point and what every format shows |
+| `reporter.text.go`, `.markdown.go`, `.json.go`, `.sarif.go`, `.github.go` | One output format each |
+| `baseline.ratchet.go`, `suppression.rules.go` | Baseline ratchet, `.dupehound-ignore` |
+| `git.staged.go`, `git.diff.go`, `git.churn.go` | Staged files, diff ranges, churn |
+
+## Naming
+
+Every Go file is `<feature>.<concern>.go`; its tests are
+`<feature>.<concern>_test.go`, or `<feature>.<concern>.<topic>_test.go` when one
+concern has several test files. `main.go` is the only exception. structlint
+enforces this in the pre-commit hook.
+
+Use dots, not underscores, between the parts. Go compiles a file ending in
+`_js.go`, `_windows.go`, `_arm.go` or `_wasm.go` only for that platform, with no
+warning, so `tokenizer_js.go` would silently drop out of the build.
 
 New code goes in the file that owns the concern. If none does, add
-`<area>_<concern>.go` and a row here. Keep files under about 600 lines.
+`<feature>.<concern>.go` and a row above. Keep files under about 600 lines.
 
 ## Do
 
@@ -73,6 +89,8 @@ New code goes in the file that owns the concern. If none does, add
 - Don't change `heapHeadroom` or `fuzzyBytesPerMiniHash` without re-measuring
   estimate against peak RSS on real repositories.
 - Don't commit benchmark or crosscheck harnesses; they are local tooling.
+- Don't leave duplication in this repository: `dupehound scan` on itself reports
+  none, and the PR gate fails on any that a change touches.
 - Don't bypass git hooks, and don't add AI attribution to commits or PRs.
 - Don't widen scope beyond duplicates and dead code.
 

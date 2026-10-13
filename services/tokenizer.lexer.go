@@ -418,3 +418,25 @@ func kindsEqual(a, b []TokenKind) bool {
 	}
 	return true
 }
+
+// matchOpening walks backwards from before and returns the index of the
+// openText delimiter that is still open at that point — the partner of a
+// closeText at before, or the opener of the block enclosing it. Nested pairs in
+// between are skipped. It returns -1 when there is none.
+func matchOpening(tokens []Token, before int, openText, closeText string) int {
+	depth := 1
+	for k := before - 1; k >= 0; k-- {
+		if tokens[k].Kind != TokOperator {
+			continue
+		}
+		switch tokens[k].Text {
+		case closeText:
+			depth++
+		case openText:
+			if depth--; depth == 0 {
+				return k
+			}
+		}
+	}
+	return -1
+}

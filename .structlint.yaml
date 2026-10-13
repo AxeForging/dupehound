@@ -21,7 +21,10 @@ dir_structure:
 
 file_naming_pattern:
   allowed:
-    - "*.go"
+    # Go files are named <feature>.<concern>.go (tests: <feature>.<concern>_test.go),
+    # so a file's name says which feature owns it. main.go is the one exception.
+    - "*.*.go"
+    - "main.go"
     - "*.mod"
     - "*.sum"
     - "*.yaml"
