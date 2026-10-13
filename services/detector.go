@@ -1,13 +1,13 @@
 package services
 
 import (
+	"bytes"
 	"fmt"
 	"hash/fnv"
 	"math"
 	"os"
 	"slices"
 	"sort"
-	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
@@ -929,15 +929,29 @@ func hashTokens(tokens []Token, includeOrig bool) uint64 {
 
 // loadPreviewLines reads the specified line range from a file on disk.
 // This avoids holding all source lines in memory during detection.
+//
+// Each returned line is its own copy. Slicing them out of the file contents
+// instead would keep the whole file alive for as long as the preview is — once
+// per clone instance, which is gigabytes on a large repository.
 func loadPreviewLines(path string, startLine, endLine int) []string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	rawLines := strings.Split(string(data), "\n")
-	preview := make([]string, 0, endLine-startLine+1)
-	for ln := startLine; ln <= endLine && ln-1 < len(rawLines); ln++ {
-		preview = append(preview, rawLines[ln-1])
+	preview := make([]string, 0, max(endLine-startLine+1, 0))
+	for ln := 1; ln <= endLine; ln++ {
+		nl := bytes.IndexByte(data, '\n')
+		last := nl < 0
+		if last {
+			nl = len(data)
+		}
+		if ln >= startLine {
+			preview = append(preview, string(data[:nl]))
+		}
+		if last {
+			break
+		}
+		data = data[nl+1:]
 	}
 	return preview
 }
