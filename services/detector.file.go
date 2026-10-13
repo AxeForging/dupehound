@@ -34,6 +34,10 @@ type TokenizedFile struct {
 	// recognise a clone whose every instance sits inside ONE such literal, which
 	// describes a data table rather than duplicated logic.
 	DataLiterals []TokenSpan
+	// ObjectLiterals are object literals outside executable code (JS/TS locale
+	// tables, config objects). Whole-file detection compares their values
+	// exactly; see objectLiteralSpans.
+	ObjectLiterals []TokenSpan
 	// FuncLiterals are the bodies of function literals. A body nested inside a
 	// DataLiterals span is logic that merely lives in a table, so it is exempt
 	// from the rule above.
@@ -150,17 +154,19 @@ func buildTokenizedFile(path string, tokens []Token, lang *domain.Language) Toke
 	}
 
 	dataLiterals := findDataLiteralSpans(tokens, lang)
+	logic := markLogic(tokens, inFunc, lang)
 
 	return TokenizedFile{
-		Path:         path,
-		Tokens:       tokens,
-		Imports:      markImports(tokens, inFunc, lang),
-		Logic:        markLogic(tokens, inFunc, lang),
-		InFunc:       inFunc,
-		Ignored:      ignored,
-		Funcs:        funcs,
-		DataLiterals: dataLiterals,
-		FuncLiterals: nestedFuncLiterals(findFuncLiteralBodies(tokens, lang, funcs), dataLiterals),
+		Path:           path,
+		Tokens:         tokens,
+		Imports:        markImports(tokens, inFunc, lang),
+		Logic:          logic,
+		ObjectLiterals: objectLiteralSpans(tokens, logic, lang),
+		InFunc:         inFunc,
+		Ignored:        ignored,
+		Funcs:          funcs,
+		DataLiterals:   dataLiterals,
+		FuncLiterals:   nestedFuncLiterals(findFuncLiteralBodies(tokens, lang, funcs), dataLiterals),
 	}
 }
 
