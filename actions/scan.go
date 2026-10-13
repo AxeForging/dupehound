@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
 	"github.com/AxeForging/dupehound/services"
 	"github.com/urfave/cli"
@@ -225,9 +226,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		}
 	}
 
-	// Exit 1 if dead functions found.
-	if len(report.DeadFunctions) > 0 && !exitZero {
-		return helpers.ErrClonesFound
+	// Exit 1 only for dead functions the scan is sure of. Low-confidence
+	// findings are public functions nothing here calls — still reported, but
+	// they may be API for callers outside the repository.
+	if !exitZero {
+		for _, df := range report.DeadFunctions {
+			if df.Confidence == domain.ConfidenceHigh {
+				return helpers.ErrClonesFound
+			}
+		}
 	}
 
 	return nil

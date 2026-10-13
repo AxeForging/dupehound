@@ -443,6 +443,8 @@ Each finding carries a `confidence` in JSON output, and high-confidence findings
 - `high` — the function is private to code that was scanned, and nothing there mentions it.
 - `low` — the function is public. Nothing in the repository uses it, but callers outside it might; treat these as "unused export", not "dead".
 
+Only `high` findings make the scan exit 1. `low` findings are printed but never fail a build on their own.
+
 ```sh
 # Only the findings worth acting on without further thought
 dupehound scan --dead-code --exit-zero -f json | jq '.dead_functions[] | select(.confidence == "high")'

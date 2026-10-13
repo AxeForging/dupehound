@@ -1,7 +1,6 @@
 package services
 
 import (
-	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -414,12 +413,13 @@ func scanDeadCode(root string, defFiles []TokenizedFile, maxFileSize int64) []do
 		a.observeSource(tf.Path, tf.Tokens)
 	}
 
-	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	// filepath.Walk, like collectFiles: the two must agree on what the tree is.
+	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || len(a.pending) == 0 {
 			return nil
 		}
-		if d.IsDir() {
-			if path != root && isHiddenOrVendored(d.Name()) {
+		if info.IsDir() {
+			if path != root && isHiddenOrVendored(info.Name()) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -431,10 +431,8 @@ func scanDeadCode(root string, defFiles []TokenizedFile, maxFileSize int64) []do
 		if lang == nil && !referenceFileExts[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
-		if maxFileSize > 0 {
-			if info, statErr := d.Info(); statErr != nil || info.Size() > maxFileSize {
-				return nil
-			}
+		if maxFileSize > 0 && info.Size() > maxFileSize {
+			return nil
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil || isBinaryData(data) {
