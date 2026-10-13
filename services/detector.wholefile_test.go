@@ -236,3 +236,59 @@ func TestWholeFile_AttributesCloneToTheFunctionItMostlyCovers(t *testing.T) {
 		t.Errorf("attributed to %q and %q, want helper and worker", a, b)
 	}
 }
+
+// Found in a real TypeScript app after the whole-file default shipped: its
+// locale files (`es.ts`, `ja-JP.ts`, …) share every key and differ only in the
+// translated strings, and were reported as 2,600-line clones of each other —
+// doubling the app's duplication figure. An object literal outside any function
+// is data: its values have to match for it to be a copy.
+func TestWholeFile_ObjectLiteralsWithDifferentValuesAreNotClones(t *testing.T) {
+	keys := []string{"copy", "copied", "share", "retry", "remove", "cancel", "confirm", "close", "search", "loading"}
+	tests := []struct {
+		name string
+		open func(locale string) string // text before the entries
+		end  string
+	}{
+		{"typed const", func(l string) string { return "import type { T } from './t'\n\nconst " + l + ": T = {\n  common: {\n" }, "  },\n}\n"},
+		{"default export", func(string) string { return "export default {\n  common: {\n" }, "  },\n}\n"},
+		{"call argument", func(string) string { return "export const messages = defineMessages({\n  common: {\n" }, "  },\n})\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			locale := func(name, suffix string) string {
+				var b strings.Builder
+				b.WriteString(tt.open(name))
+				for _, k := range keys {
+					b.WriteString("    " + k + ": '" + k + " " + suffix + "',\n")
+				}
+				b.WriteString(tt.end)
+				return b.String()
+			}
+			files := []TokenizedFile{tokenize("locales/en.ts", locale("en", "in English")), tokenize("locales/es.ts", locale("es", "en español"))}
+			if got := detectWholeFile(files, 30); len(got) != 0 {
+				t.Errorf("two locale objects with different values reported as %d clones, want 0", len(got))
+			}
+			files[1] = tokenize("locales/en-GB.ts", locale("enGB", "in English"))
+			if got := detectWholeFile(files, 30); len(got) != 1 {
+				t.Errorf("a locale object copied verbatim reported as %d clones, want 1", len(got))
+			}
+		})
+	}
+}
+
+// A function written inside an object literal is still logic: a renamed copy of
+// it is a type-2 clone, as anywhere else.
+func TestWholeFile_FunctionInsideObjectLiteralIsStillLogic(t *testing.T) {
+	handlers := func(name, acc, item, label string) string {
+		return "export const " + name + " = {\n  label: '" + label + "',\n  total(xs: number[], limit: number) {\n    let " + acc + " = 0\n" +
+			"    for (const " + item + " of xs) {\n      if (" + item + " > limit) {\n        " + acc + " += " + item + " * 2\n      } else {\n        " + acc + " += 1\n      }\n    }\n    return " + acc + "\n  },\n}\n"
+	}
+	files := []TokenizedFile{
+		tokenize("a.ts", handlers("orders", "total", "x", "Orders")),
+		tokenize("b.ts", handlers("refunds", "sum", "value", "Refunds")),
+	}
+	clones := detectWholeFile(files, 30)
+	if len(clones) != 1 || clones[0].Type != domain.CloneType2 {
+		t.Errorf("renamed method inside an object literal: got %d clones, want 1 type-2", len(clones))
+	}
+}

@@ -357,3 +357,42 @@ func matchGroupAfter(tokens []Token, i int, openText, closeText string) int {
 	}
 	return matchDelimiter(tokens, i+1, openText, closeText)
 }
+
+// objectLiteralLangs write data as `{ key: value }` with the same brace that
+// opens a block, so position decides which one a brace is.
+var objectLiteralLangs = strSet("javascript", "typescript")
+
+// objectLiteralSpans finds object literals written outside executable code:
+// `const es = { … }`, `export default { … }`, `defineMessages({ … })`. They are
+// data — locale tables, route maps, config — so whole-file detection requires
+// their values to match, as it does for the literals findDataLiteralSpans
+// returns. They are kept apart from those because inside a function body an
+// object literal is far more often an argument than a table, and the rule that
+// drops a clone confined to one literal should not reach it.
+//
+// A brace is taken for an object literal when it follows something a value can
+// follow. A TS type literal in the same position is caught too, which is
+// harmless: it holds no values to compare.
+func objectLiteralSpans(tokens []Token, logic []bool, lang *domain.Language) []TokenSpan {
+	if lang == nil || !objectLiteralLangs[lang.Name] {
+		return nil
+	}
+	var spans []TokenSpan
+	for i := 1; i < len(tokens); i++ {
+		if !isOpenBrace(tokens[i]) || (i < len(logic) && logic[i]) {
+			continue
+		}
+		switch prev := tokens[i-1]; prev.Text + prev.OrigText {
+		case "=", ":", ",", "(", "[", "?", "default":
+		default:
+			continue
+		}
+		end := matchDelimiter(tokens, i, "{", "}")
+		if end < 0 {
+			continue
+		}
+		spans = append(spans, TokenSpan{Start: i, End: end})
+		i = end
+	}
+	return spans
+}

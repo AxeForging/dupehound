@@ -310,11 +310,13 @@ func windowHashes(tf TokenizedFile, minTokens int, wholeFile bool) []uint64 {
 		logic = tf.InFunc
 	}
 	var inTable []bool // tokens inside a data literal; whole-file mode only
-	if wholeFile && len(tf.DataLiterals) > 0 {
+	if wholeFile && len(tf.DataLiterals)+len(tf.ObjectLiterals) > 0 {
 		inTable = make([]bool, n)
-		for _, span := range tf.DataLiterals {
-			for i := span.Start; i <= span.End && i < n; i++ {
-				inTable[i] = true
+		for _, spans := range [][]TokenSpan{tf.DataLiterals, tf.ObjectLiterals} {
+			for _, span := range spans {
+				for i := span.Start; i <= span.End && i < n; i++ {
+					inTable[i] = true
+				}
 			}
 		}
 	}
