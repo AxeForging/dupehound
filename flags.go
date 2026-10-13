@@ -171,3 +171,9 @@ var scopeFlag = cli.StringFlag{
 	Value: "file",
 	Usage: "Where type-1/2 clones may lie: 'file' (anywhere in the file, spanning functions; outside function bodies names must match, and import statements are ignored) or 'function' (inside one function body only)",
 }
+
+var minCloneLinesFlag = cli.IntFlag{
+	Name:  "min-clone-lines",
+	Value: 5,
+	Usage: "Drop clones spanning fewer lines than this (0 = no floor). --min-tokens alone lets a few dense lines qualify; this keeps findings to blocks worth extracting",
+}

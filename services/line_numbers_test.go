@@ -1,6 +1,7 @@
 package services
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -258,5 +259,46 @@ func TestTokenize_ShiftOperatorIsNotAHeredoc(t *testing.T) {
 		if lineOfIdent(tokens, "MARKER") == 0 {
 			t.Errorf("%s: code after `<<` was swallowed as a heredoc body", tt.lang)
 		}
+	}
+}
+
+// A clone that ends in a multi-line string covers that string's lines too.
+// Reporting only the line the string starts on cut every heredoc-heavy clone
+// short: in rails, Sonar counted hundreds of lines dupehound left out.
+func TestDetect_CloneRangeIncludesTrailingMultiLineString(t *testing.T) {
+	tests := []struct {
+		name    string
+		path    string
+		src     string
+		wantEnd int
+	}{
+		{
+			name: "ruby heredoc",
+			path: "feeds.rb",
+			src: "FEEDS = {}\nFEEDS[\"a\"] = <<~EOS\n  one\n  two\nEOS\nFEEDS[\"b\"] = <<~EOS\n  three\n  four\nEOS\n" +
+				"FEEDS[\"c\"] = <<~EOS\n  five\n  six\n  seven\nEOS\n",
+			wantEnd: 14,
+		},
+		{
+			name:    "go raw string",
+			path:    "q.go",
+			src:     "package q\n\nvar a, b, c, d, e, f, g = 1, 2, 3, 4, 5, 6, `select\n  *\nfrom\n  t`\n",
+			wantEnd: 6,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ext := tt.path[strings.LastIndex(tt.path, "."):]
+			files := []TokenizedFile{tokenize("a"+ext, tt.src), tokenize("b"+ext, tt.src)}
+			clones, _ := DetectWithOptions(files, DetectOptions{MinTokens: 12, MinSimilarity: 1.0, WholeFile: true})
+			if len(clones) != 1 {
+				t.Fatalf("got %d clones, want 1", len(clones))
+			}
+			for _, inst := range clones[0].Instances {
+				if inst.EndLine != tt.wantEnd {
+					t.Errorf("%s ends on line %d, want %d (the last line of the trailing string)", inst.File, inst.EndLine, tt.wantEnd)
+				}
+			}
+		})
 	}
 }

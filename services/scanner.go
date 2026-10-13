@@ -40,6 +40,7 @@ type ScanOptions struct {
 	WriteBaseline  string  // path to write a new baseline capturing the current clones as accepted debt
 	MaxMemory      int64   // memory budget in bytes (0 = no budget); see memoryBudget
 	WholeFile      bool    // detect type-1/2 clones across the whole file, not only inside one function body
+	MinCloneLines  int     // drop clones spanning fewer lines than this (0 = no floor)
 }
 
 // ScannerService performs code duplication detection.
@@ -248,6 +249,11 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		InScopeFiles:  inScopeFiles,
 	})
 	clones = deduplicateOverlapping(clones)
+	if opts.MinCloneLines > 0 {
+		// Applied before anything is counted or annotated, so every total in
+		// the report describes the clones it actually lists.
+		clones = clonesWithout(clones, func(c domain.Clone) bool { return c.LineCount < opts.MinCloneLines })
+	}
 
 	// Annotate test↔prod spans.
 	annotateTestProdSpan(clones)

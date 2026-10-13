@@ -3,6 +3,7 @@ package services
 import (
 	"bytes"
 	"os"
+	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
 )
@@ -27,7 +28,12 @@ func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) d
 	if endIdx >= len(toks) {
 		endIdx = len(toks) - 1
 	}
+	// A string literal can span lines (heredocs, raw and triple-quoted strings);
+	// the instance ends where its last token ends, not where it starts.
 	endLine := toks[endIdx].Line
+	if last := toks[endIdx]; last.Kind == TokString {
+		endLine += strings.Count(last.OrigText, "\n")
+	}
 	preview := loadPreviewLines(files[fileIdx].Path, startLine, endLine)
 
 	return domain.CloneInstance{

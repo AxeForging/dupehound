@@ -108,6 +108,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		}
 		opts.MaxMemory = budget
 	}
+	// Minimum clone size in lines: CLI wins, then config, then the flag's default.
+	opts.MinCloneLines = c.Int("min-clone-lines")
+	if !c.IsSet("min-clone-lines") && cfg.Scan.MinCloneLines != nil {
+		opts.MinCloneLines = *cfg.Scan.MinCloneLines
+	}
+	if opts.MinCloneLines < 0 {
+		return fmt.Errorf("invalid --min-clone-lines %d: must be 0 or more", opts.MinCloneLines)
+	}
+
 	// Scope: CLI wins, then config, then the flag's default.
 	scope := c.String("scope")
 	if !c.IsSet("scope") && cfg.Scan.Scope != "" {

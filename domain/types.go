@@ -123,6 +123,9 @@ type ScanConfig struct {
 	Top       int      `yaml:"top"`
 	Baseline  string   `yaml:"baseline"` // path to a baseline file written with --write-baseline
 	Scope     string   `yaml:"scope"`    // file | function: where type-1/2 clones may lie
+	// MinCloneLines is a pointer so that an explicit 0 (no floor) in the config
+	// can be told apart from the key being absent.
+	MinCloneLines *int `yaml:"min-clone-lines"`
 }
 
 // Language defines a programming language and how to strip its comments.

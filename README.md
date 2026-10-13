@@ -103,6 +103,8 @@ Options:
   --max-file-size      Skip files larger than this many bytes BEFORE reading them
                        [default: 5242880 (5MiB), 0 = unlimited]; oversized files are
                        almost always minified/generated and would dominate memory
+  --min-clone-lines    Drop clones spanning fewer lines than this [default: 5, 0 = no floor].
+                       --min-tokens alone lets two or three dense lines qualify
   --scope              Where type-1/2 clones may lie [default: file]. 'file' looks across the
                        whole file, so a copied class made of small methods or a run of
                        block-style tests is one finding; outside function bodies names must
