@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/AxeForging/dupehound/domain"
 	"github.com/AxeForging/dupehound/helpers"
 	"github.com/AxeForging/dupehound/services"
 	"github.com/urfave/cli"
@@ -96,6 +97,38 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 	// Same for max-file-size: the 5MiB default guards memory unless the user
 	// explicitly passes 0 for unlimited.
 	opts.MaxFileSize = c.Int64("max-file-size")
+	// The memory budget defaults to "auto" so an unattended scan is bounded
+	// even when nobody thought to set a limit.
+	if v := c.String("max-memory"); v == "auto" {
+		opts.MaxMemory = helpers.SystemMemoryBudget()
+	} else {
+		budget, err := helpers.ParseByteSize(v)
+		if err != nil {
+			return fmt.Errorf("invalid --max-memory %q: %w", v, err)
+		}
+		opts.MaxMemory = budget
+	}
+	// Minimum clone size in lines: CLI wins, then config, then the flag's default.
+	opts.MinCloneLines = c.Int("min-clone-lines")
+	if !c.IsSet("min-clone-lines") && cfg.Scan.MinCloneLines != nil {
+		opts.MinCloneLines = *cfg.Scan.MinCloneLines
+	}
+	if opts.MinCloneLines < 0 {
+		return fmt.Errorf("invalid --min-clone-lines %d: must be 0 or more", opts.MinCloneLines)
+	}
+
+	// Scope: CLI wins, then config, then the flag's default.
+	scope := c.String("scope")
+	if !c.IsSet("scope") && cfg.Scan.Scope != "" {
+		scope = cfg.Scan.Scope
+	}
+	switch scope {
+	case "file":
+		opts.WholeFile = true
+	case "function":
+	default:
+		return fmt.Errorf("invalid scope %q: must be file or function", scope)
+	}
 	opts.ScanGenerated = c.Bool("scan-generated")
 	if c.IsSet("baseline") {
 		opts.Baseline = c.String("baseline")
@@ -214,9 +247,15 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		}
 	}
 
-	// Exit 1 if dead functions found.
-	if len(report.DeadFunctions) > 0 && !exitZero {
-		return helpers.ErrClonesFound
+	// Exit 1 only for dead functions the scan is sure of. Low-confidence
+	// findings are public functions nothing here calls — still reported, but
+	// they may be API for callers outside the repository.
+	if !exitZero {
+		for _, df := range report.DeadFunctions {
+			if df.Confidence == domain.ConfidenceHigh {
+				return helpers.ErrClonesFound
+			}
+		}
 	}
 
 	return nil

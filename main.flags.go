@@ -159,3 +159,21 @@ var writeBaselineFlag = cli.StringFlag{
 	Value: "",
 	Usage: "Write the current clones to a baseline file (accepted debt) and exit 0; commit it and use --baseline in hooks/CI to block only new duplication",
 }
+
+var maxMemoryFlag = cli.StringFlag{
+	Name:  "max-memory",
+	Value: "auto",
+	Usage: "Memory budget for the scan, e.g. 2G or 512M (auto = half of available system or container memory, 0 = unlimited). Type-3 detection is skipped when it would not fit; a scan that cannot fit at all stops with an error instead of being killed",
+}
+
+var scopeFlag = cli.StringFlag{
+	Name:  "scope",
+	Value: "file",
+	Usage: "Where type-1/2 clones may lie: 'file' (anywhere in the file, spanning functions; outside function bodies names must match, and import statements are ignored) or 'function' (inside one function body only)",
+}
+
+var minCloneLinesFlag = cli.IntFlag{
+	Name:  "min-clone-lines",
+	Value: 5,
+	Usage: "Drop clones spanning fewer lines than this (0 = no floor). --min-tokens alone lets a few dense lines qualify; this keeps findings to blocks worth extracting",
+}

@@ -92,7 +92,17 @@ type DeadFunc struct {
 	Line     int    `json:"line"`
 	Name     string `json:"name"`
 	Language string `json:"language"`
+	// Confidence is "high" for a function that can only be called from code
+	// that was scanned (unexported, private, module-local) and "low" for one
+	// that is public: unused here, but possibly API for callers elsewhere.
+	Confidence string `json:"confidence,omitempty"`
 }
+
+// Dead-function confidence levels.
+const (
+	ConfidenceHigh = "high"
+	ConfidenceLow  = "low"
+)
 
 // Config is the structure of a .dupehound.yml config file.
 type Config struct {
@@ -112,6 +122,10 @@ type ScanConfig struct {
 	ExitZero  bool     `yaml:"exit-zero"`
 	Top       int      `yaml:"top"`
 	Baseline  string   `yaml:"baseline"` // path to a baseline file written with --write-baseline
+	Scope     string   `yaml:"scope"`    // file | function: where type-1/2 clones may lie
+	// MinCloneLines is a pointer so that an explicit 0 (no floor) in the config
+	// can be told apart from the key being absent.
+	MinCloneLines *int `yaml:"min-clone-lines"`
 }
 
 // Language defines a programming language and how to strip its comments.

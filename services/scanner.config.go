@@ -48,25 +48,27 @@ func LoadConfig(path string) (domain.Config, error) {
 // has not already set them (zero value = not set by CLI flag).
 // CLI flags always win; config is only a fallback.
 func ApplyConfigDefaults(opts *ScanOptions, cfg domain.Config) {
-	if opts.Path == "" && cfg.Scan.Path != "" {
-		opts.Path = cfg.Scan.Path
+	fallback(&opts.Path, cfg.Scan.Path)
+	fallback(&opts.Language, cfg.Scan.Language)
+	fallback(&opts.Baseline, cfg.Scan.Baseline)
+	if cfg.Scan.MinTokens > 0 {
+		fallback(&opts.MinTokens, cfg.Scan.MinTokens)
 	}
-	if opts.MinTokens == 0 && cfg.Scan.MinTokens > 0 {
-		opts.MinTokens = cfg.Scan.MinTokens
+	if cfg.Scan.Top > 0 {
+		fallback(&opts.Top, cfg.Scan.Top)
 	}
-	if len(opts.Exclude) == 0 && len(cfg.Scan.Exclude) > 0 {
-		opts.Exclude = cfg.Scan.Exclude
+	if len(opts.Exclude) == 0 {
+		opts.Exclude = append(opts.Exclude, cfg.Scan.Exclude...)
 	}
-	if len(opts.Include) == 0 && len(cfg.Scan.Include) > 0 {
-		opts.Include = cfg.Scan.Include
+	if len(opts.Include) == 0 {
+		opts.Include = append(opts.Include, cfg.Scan.Include...)
 	}
-	if opts.Language == "" && cfg.Scan.Language != "" {
-		opts.Language = cfg.Scan.Language
-	}
-	if opts.Top == 0 && cfg.Scan.Top > 0 {
-		opts.Top = cfg.Scan.Top
-	}
-	if opts.Baseline == "" && cfg.Scan.Baseline != "" {
-		opts.Baseline = cfg.Scan.Baseline
+}
+
+// fallback sets *dst to v when the caller left it at its zero value.
+func fallback[T comparable](dst *T, v T) {
+	var zero T
+	if *dst == zero {
+		*dst = v
 	}
 }

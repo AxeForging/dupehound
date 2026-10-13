@@ -103,6 +103,19 @@ Options:
   --max-file-size      Skip files larger than this many bytes BEFORE reading them
                        [default: 5242880 (5MiB), 0 = unlimited]; oversized files are
                        almost always minified/generated and would dominate memory
+  --min-clone-lines    Drop clones spanning fewer lines than this [default: 5, 0 = no floor].
+                       --min-tokens alone lets two or three dense lines qualify
+  --scope              Where type-1/2 clones may lie [default: file]. 'file' looks across the
+                       whole file, so a copied class made of small methods or a run of
+                       block-style tests is one finding; outside function bodies names must
+                       match, and import statements are ignored. 'function' looks inside one
+                       function body at a time (the behaviour before this option existed)
+  --max-memory         Memory budget, e.g. 2G or 512M [default: auto = half of system or
+                       container memory, 0 = unlimited]. A scan that would exceed it
+                       switches to low-memory mode: files are held as a compact index and
+                       re-read on demand. Type-1/2 results are identical; type-3 detection
+                       is skipped (partial result). If even that does not fit, the scan
+                       stops with an error instead of being killed by the OS
   --baseline           Compare against a baseline file: recorded clones are accepted
                        debt, only NEW clones (or grown instance counts) fail the scan
   --write-baseline     Write current clones to a baseline file (accepted debt) and
@@ -315,7 +328,7 @@ Every clone instance is attributed to its **enclosing function** (`api/user.go:4
 - **scope** — `same-file` (trivial extraction), `cross-file` (same directory), or `cross-dir` (usually needs a shared package)
 - a stable **content-based fingerprint** (`hash`) usable in `.dupehound-ignore` suppression rules and baselines
 
-If a safety guard reduced type-3 coverage (`--max-pairs`, `--max-bucket`), every format carries an explicit **partial result** marker (`!! PARTIAL RESULT` banner, `partial`/`partial_reason` JSON fields, SARIF run properties) — type-1/2 results are always complete.
+If a safety guard reduced type-3 coverage (`--max-pairs`, `--max-bucket`, `--max-memory`), every format carries an explicit **partial result** marker (`!! PARTIAL RESULT` banner, `partial`/`partial_reason` JSON fields, SARIF run properties) — type-1/2 results are always complete.
 
 ## Exit codes
 

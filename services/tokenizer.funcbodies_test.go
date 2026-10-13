@@ -2,6 +2,7 @@ package services
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 )
 
@@ -313,6 +314,49 @@ ANOTHER="value"
 	tf := BuildTokenizedFile("a.sh", src, LangForName("shell"))
 	assertLineExcluded(t, "shell", tf, 1, "top-level variable")
 	assertBodyMarked(t, "shell", tf, 4)
+}
+
+// The portable POSIX form `name() { … }` is how most shell functions are
+// written; only the bash-only `function` keyword used to be recognised, so
+// duplication in ordinary shell scripts was invisible.
+func TestFuncBoundary_ShellPosixFunction(t *testing.T) {
+	src := `MAX=100
+
+process() {
+    result=$(compute "${MAX}")
+    validate "$result"
+}
+
+ANOTHER="value"
+
+function legacy {
+    cleanup
+}
+`
+	lang := LangForName("shell")
+	tf := BuildTokenizedFile("a.sh", src, lang)
+	assertLineExcluded(t, "shell", tf, 1, "top-level variable")
+	assertBodyMarked(t, "shell", tf, 4)
+	assertBodyMarked(t, "shell", tf, 5)
+	assertLineExcluded(t, "shell", tf, 8, "top-level variable after the function")
+	assertBodyMarked(t, "shell", tf, 11)
+
+	var names []string
+	for _, f := range tf.Funcs {
+		names = append(names, f.Name)
+	}
+	if !slices.Equal(names, []string{"process", "legacy"}) {
+		t.Errorf("shell function names = %q, want [process legacy]", names)
+	}
+}
+
+// A command substitution or subshell call is not a function definition.
+func TestFuncBoundary_ShellCallIsNotAFunction(t *testing.T) {
+	src := "result=$(compute)\nrun_all() ; echo done\nVALUE=1\n"
+	tf := BuildTokenizedFile("a.sh", src, LangForName("shell"))
+	for line := 1; line <= 3; line++ {
+		assertLineExcluded(t, "shell", tf, line, "top-level statement")
+	}
 }
 
 // --- SQL ---

@@ -1,5 +1,7 @@
 package services
 
+import "slices"
+
 // FuncSpan records the token-index range of one function/method body together
 // with the best-effort name of the function it belongs to. Start and End are
 // inclusive token indices of the body contents. Name is "" when the function
@@ -25,6 +27,29 @@ func enclosingFuncName(spans []FuncSpan, pos int) string {
 	for _, s := range spans {
 		if s.Name != "" && s.Start <= pos && pos <= s.End && s.Start > best {
 			best = s.Start
+			name = s.Name
+		}
+	}
+	return name
+}
+
+// funcNameForRange names the function a clone instance covering tokens
+// [pos, end] belongs to. An instance that starts inside a function is
+// attributed to it, as before. One that starts outside — in a signature, or
+// between functions, which whole-file detection allows — is attributed to the
+// named function it overlaps most.
+func funcNameForRange(spans []FuncSpan, pos, end int) string {
+	if name := enclosingFuncName(spans, pos); name != "" {
+		return name
+	}
+	name := ""
+	best := 0
+	for _, s := range spans {
+		if s.Name == "" {
+			continue
+		}
+		if overlap := min(end, s.End) - max(pos, s.Start) + 1; overlap > best {
+			best = overlap
 			name = s.Name
 		}
 	}
@@ -90,12 +115,20 @@ func funcNameAfterKeyword(tokens []Token, kwIdx int) string {
 // R's `name <- function(...)` (also `name = function(...)`). kwIdx is the
 // index of the `function` keyword.
 func funcNameBeforeAssign(tokens []Token, kwIdx int) string {
-	if kwIdx >= 2 &&
-		tokens[kwIdx-1].Kind == TokOperator && (tokens[kwIdx-1].Text == "<-" || tokens[kwIdx-1].Text == "=") &&
-		tokens[kwIdx-2].Kind == TokIdent {
-		return tokens[kwIdx-2].OrigText
+	return identBeforeOperator(tokens, kwIdx, "<-", "=")
+}
+
+// identBeforeOperator returns the identifier two tokens before idx when the
+// token between them is one of ops — the `name` of `name = …` or `name: …` —
+// and "" otherwise.
+func identBeforeOperator(tokens []Token, idx int, ops ...string) string {
+	if idx < 2 || tokens[idx-1].Kind != TokOperator || tokens[idx-2].Kind != TokIdent {
+		return ""
 	}
-	return ""
+	if !slices.Contains(ops, tokens[idx-1].Text) {
+		return ""
+	}
+	return tokens[idx-2].OrigText
 }
 
 // cStyleFuncName extracts a best-effort function name for a body brace at
@@ -131,22 +164,7 @@ func cStyleFuncName(tokens []Token, braceIdx int) string {
 // matchOpenParen returns the index of the `(` matching the `)` at closeParen,
 // or -1 when unbalanced.
 func matchOpenParen(tokens []Token, closeParen int) int {
-	depth := 1
-	for k := closeParen - 1; k >= 0; k-- {
-		if tokens[k].Kind != TokOperator {
-			continue
-		}
-		switch tokens[k].Text {
-		case ")":
-			depth++
-		case "(":
-			depth--
-			if depth == 0 {
-				return k
-			}
-		}
-	}
-	return -1
+	return matchOpening(tokens, closeParen, "(", ")")
 }
 
 // jsFuncName extracts the name for a JS/TS function whose parameter list ends
@@ -163,11 +181,7 @@ func jsFuncName(tokens []Token, closeParen int) string {
 	}
 	if before.Kind == TokKeyword && before.Text == "function" {
 		// `const name = function(` / `name: function(` — walk past the keyword.
-		if open >= 3 &&
-			tokens[open-2].Kind == TokOperator && (tokens[open-2].Text == "=" || tokens[open-2].Text == ":") &&
-			tokens[open-3].Kind == TokIdent {
-			return tokens[open-3].OrigText
-		}
+		return identBeforeOperator(tokens, open-1, "=", ":")
 	}
 	return ""
 }

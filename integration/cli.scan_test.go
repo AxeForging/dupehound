@@ -924,7 +924,7 @@ func TestCloneType_JSONOutput_CorrectType(t *testing.T) {
 	writeFile(t, dir, "a.go", "package main\n\n"+block)
 	writeFile(t, dir, "b.go", "package main\n\n"+block)
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--min-clone-lines", "0", "--exit-zero", "--format", "json").Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
@@ -991,7 +991,7 @@ func TestCloneType_MixedThreeWay_ClassifiedAsType2(t *testing.T) {
 	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tresult := compute()\n\tvalidate(result)\n\tstore(result)\n\tnotify(result)\n\treturn result\n}\n")
 	writeFile(t, dir, "c.go", "package main\n\nfunc process() {\n\toutput := compute()\n\tvalidate(output)\n\tstore(output)\n\tnotify(output)\n\treturn output\n}\n")
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--min-clone-lines", "0", "--exit-zero", "--format", "json").Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
@@ -1018,7 +1018,7 @@ func TestType3_CLIDetectsNearMiss(t *testing.T) {
 	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tstore(x)\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
 	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tif x > 0 {\n\t\tstore(x)\n\t}\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--min-clone-lines", "0", "--exit-zero", "--format", "json").Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}
@@ -1067,7 +1067,7 @@ func TestType3_JSONOutput_HasType3(t *testing.T) {
 	writeFile(t, dir, "a.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tstore(x)\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
 	writeFile(t, dir, "b.go", "package main\n\nfunc process() {\n\tx := compute()\n\tvalidate(x)\n\ttransform(x)\n\tif x > 0 {\n\t\tstore(x)\n\t}\n\tnotify(x)\n\tlog(x)\n\treturn x\n}\n")
 
-	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--exit-zero", "--format", "json").Output()
+	out, err := exec.Command(bin, "scan", "--path", dir, "--min-tokens", "10", "--min-clone-lines", "0", "--exit-zero", "--format", "json").Output()
 	if err != nil {
 		t.Fatalf("scan failed: %v", err)
 	}

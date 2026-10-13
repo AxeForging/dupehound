@@ -1,10 +1,11 @@
 package services
 
 import (
+	"cmp"
 	"fmt"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
@@ -73,10 +74,10 @@ func getFileCommitCount(repoRoot, file string, churnDays int) (int, error) {
 
 // sortByChurn re-sorts clones by ChurnScore descending (highest churn first).
 func sortByChurn(clones []domain.Clone) {
-	sort.SliceStable(clones, func(i, j int) bool {
-		if clones[i].ChurnScore != clones[j].ChurnScore {
-			return clones[i].ChurnScore > clones[j].ChurnScore
-		}
-		return clones[i].LineCount > clones[j].LineCount
-	})
+	slices.SortStableFunc(clones, mostChurnedFirst)
+}
+
+// mostChurnedFirst orders clones by churn, then by size.
+func mostChurnedFirst(a, b domain.Clone) int {
+	return cmp.Or(cmp.Compare(b.ChurnScore, a.ChurnScore), cmp.Compare(b.LineCount, a.LineCount))
 }
