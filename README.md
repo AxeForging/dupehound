@@ -43,9 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.s
 For Gauntlet or custom GitHub Actions pipelines, install without running:
 
 ```yaml
-- uses: AxeForging/dupehound/setup@v0.1.1
+- uses: AxeForging/dupehound/setup@v0.2.0
   with:
-    version: v0.1.1
+    version: v0.2.0
 ```
 
 Pin both references for reproducible CI; use `version: latest` only when
@@ -60,8 +60,21 @@ Pin a version or install somewhere other than `/usr/local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | \
-  DUPEHOUND_VERSION=v0.1.0 DUPEHOUND_INSTALL_DIR="$HOME/.local/bin" sh
+  DUPEHOUND_VERSION=v0.2.0 DUPEHOUND_INSTALL_DIR="$HOME/.local/bin" sh
 ```
+
+### Upgrading from 0.1
+
+0.2 changes three defaults, so a first scan reports different clones:
+
+- Clones may span functions or sit outside any (`--scope file`).
+- Clones under five lines are dropped (`--min-clone-lines 5`).
+- Memory is capped at half of what is available (`--max-memory auto`); when
+  that is tight, type-3 detection is skipped and the report says so.
+
+If you use a baseline, re-record it once with `--write-baseline`. To keep the
+0.1 behaviour: `--scope function --min-clone-lines 0 --max-memory 0`.
+`--dead-code` now fails the scan only for `high` confidence findings.
 
 Or build from source:
 
@@ -249,7 +262,7 @@ Install the released tools and run the same contract locally:
 ```sh
 go install github.com/AxeForging/gauntlet/cmd/gauntlet@v0.1.0
 go install github.com/AxeForging/structlint@v0.6.0
-go install github.com/AxeForging/dupehound@v0.1.0
+go install github.com/AxeForging/dupehound@v0.2.0
 gauntlet check
 gauntlet check --staged --format agent
 ```
