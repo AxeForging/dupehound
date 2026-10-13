@@ -273,6 +273,9 @@ func overridesExternalBase(tokens []Token, def FunctionDef, classes map[string]b
 
 // visibilityOf works out how far def can be called from.
 func visibilityOf(tf TokenizedFile, def FunctionDef) defVisibility {
+	if def.VisibilityKnown {
+		return def.Visibility
+	}
 	toks := tf.Tokens
 	switch def.Lang {
 	case "go":

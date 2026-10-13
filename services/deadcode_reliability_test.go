@@ -291,3 +291,169 @@ func TestDeadCode_XunitHookOutsideATestFile(t *testing.T) {
 		t.Errorf("dead = %q, want none", got)
 	}
 }
+
+// Dead-function detection in the languages that have no function keyword
+// (Java, C, C++, C#, Dart) and for JS/TS class methods. These used to be found
+// by "an identifier followed by `(` outside a function", which matched macro
+// calls and prototypes and missed every method inside a class.
+func TestDeadCode_ClassAndCFamilyDefinitions(t *testing.T) {
+	tests := []struct {
+		name    string
+		sources map[string]string
+		want    []string
+	}{
+		{
+			name: "java private method nobody calls",
+			sources: map[string]string{
+				"Service.java": "package app;\n\npublic class Service {\n    public int run(int x) {\n        return helper(x);\n    }\n\n" +
+					"    private int helper(int x) {\n        return x + 1;\n    }\n\n    private int orphan(int x) {\n        return x * 2;\n    }\n}\n",
+				"Main.java": "package app;\n\nclass Main {\n    public static void main(String[] args) {\n        new Service().run(1);\n    }\n}\n",
+			},
+			want: []string{"Service.java:orphan"},
+		},
+		{
+			name: "java annotated, abstract and interface methods are not definitions to report",
+			sources: map[string]string{
+				"Thing.java": "package app;\n\ninterface Shape {\n    double area();\n}\n\nabstract class Base {\n    abstract void hook();\n}\n\n" +
+					"class Thing extends Base implements Shape {\n    @Override\n    public double area() {\n        return 1;\n    }\n\n" +
+					"    @Override\n    void hook() {\n    }\n\n    @Test\n    public void checksSomething() {\n    }\n\n" +
+					"    @Bean(name = \"x\")\n    public Thing provider() {\n        return this;\n    }\n}\n",
+			},
+			want: []string{},
+		},
+		{
+			name: "java control statements, calls and anonymous classes are not definitions",
+			sources: map[string]string{
+				"Flow.java": "package app;\n\nclass Flow {\n    private Runnable task = new Runnable() {\n        public void run() {\n        }\n    };\n\n" +
+					"    static {\n        register(Flow.class);\n    }\n\n    public static void main(String[] args) {\n        if (args.length > 0) {\n            compute(args);\n        }\n" +
+					"        for (String a : args) {\n            compute(args);\n        }\n    }\n\n    static void compute(String[] a) {\n    }\n\n    static void register(Class<?> c) {\n    }\n}\n",
+			},
+			want: []string{},
+		},
+		{
+			name: "c static function nobody calls, with prototypes and macros around it",
+			sources: map[string]string{
+				"util.c": "#include \"util.h\"\n\nstatic int helper(int x);\n\nDEFINE_HANDLER(startup);\n\nstatic int helper(int x) {\n    return x + 1;\n}\n\n" +
+					"static int orphan(int x) {\n    return x * 2;\n}\n\nint api(int x) {\n    return helper(x);\n}\n",
+				"main.c": "#include \"util.h\"\n\nint main(void) {\n    return api(1);\n}\n",
+			},
+			want: []string{"util.c:orphan"},
+		},
+		{
+			name: "c static function with the same name in another file does not hide a dead one",
+			sources: map[string]string{
+				"a.c": "static int parse(int x) {\n    return x;\n}\n",
+				"b.c": "static int parse(int x) {\n    return x;\n}\n\nint run(void) {\n    return parse(1);\n}\n\nint main(void) {\n    return run();\n}\n",
+			},
+			want: []string{"a.c:parse"},
+		},
+		{
+			// Found in redis: 500+ `static inline` helpers in headers were
+			// reported, because a header's functions are used by its includers.
+			name: "c static function in a header is used by the files that include it",
+			sources: map[string]string{
+				"sds.h":  "static inline int sds_len(const char *s) {\n    return s[0];\n}\n\nstatic inline int sds_orphan(const char *s) {\n    return s[1];\n}\n",
+				"main.c": "#include \"sds.h\"\n\nint main(void) {\n    return sds_len(\"x\");\n}\n",
+			},
+			want: []string{"sds.h:sds_orphan"},
+		},
+		{
+			// Found in redis: ae.c does `#include "ae_epoll.c"`, so the statics
+			// of ae_epoll.c are called from ae.c.
+			name: "c static function in a source file that another file includes",
+			sources: map[string]string{
+				"ae_epoll.c": "static int aeApiCreate(int n) {\n    return n;\n}\n\nstatic int aeApiOrphan(int n) {\n    return n;\n}\n",
+				"ae.c":       "#include \"ae_epoll.c\"\n\nint main(void) {\n    return aeApiCreate(1);\n}\n",
+			},
+			want: []string{"ae_epoll.c:aeApiOrphan"},
+		},
+		{
+			// Found in redis: a `static` on an earlier preprocessor line was
+			// read as this function's modifier, and `__attribute__((…))` was
+			// read as a function of that name.
+			name: "c modifiers stop at preprocessor lines, and attributes are not functions",
+			sources: map[string]string{
+				"lzf.c": "#define LOCAL static inline\n#if !STATE_ARG\nsize_t\nlzf_compress (const void *in, size_t len)\n{\n    return len;\n}\n#endif\n\n" +
+					"static inline __attribute__((always_inline))\nint fast_path(int x) {\n    return x;\n}\n\nint entry(int x) {\n    return fast_path(x);\n}\n",
+				"main.c": "int main(void) {\n    return entry(1) + lzf_compress(0, 1);\n}\n",
+			},
+			want: []string{},
+		},
+		{
+			// Found in guava: the JVM calls these private methods during
+			// serialization; no source ever names them.
+			name: "java serialization hooks",
+			sources: map[string]string{
+				"Box.java": "package app;\n\nclass Box implements java.io.Serializable {\n    private void writeObject(java.io.ObjectOutputStream s) {\n    }\n\n" +
+					"    private void readObject(java.io.ObjectInputStream s) {\n    }\n\n    private Object readResolve() {\n        return this;\n    }\n\n" +
+					"    private Object writeReplace() {\n        return this;\n    }\n\n    private void orphan() {\n    }\n}\n",
+			},
+			want: []string{"Box.java:orphan"},
+		},
+		{
+			name: "c++ constructor initializer lists and overrides",
+			sources: map[string]string{
+				"w.cc": "class Widget : public Base {\n public:\n  Widget(int a, int b) : a_(a), b_(compute(b)) {\n  }\n\n  void Draw() override {\n  }\n\n" +
+					" private:\n  static int compute(int v) {\n    return v;\n  }\n};\n\nint main() {\n  Widget w(1, 2);\n  return 0;\n}\n",
+			},
+			want: []string{},
+		},
+		{
+			name: "csharp private method and attribute-marked tests",
+			sources: map[string]string{
+				"Svc.cs": "namespace App {\n    public class Svc {\n        public int Run(int x) {\n            return Helper(x);\n        }\n\n" +
+					"        private int Helper(int x) {\n            return x + 1;\n        }\n\n        private int Orphan(int x) {\n            return x * 2;\n        }\n\n" +
+					"        [Fact]\n        public void ChecksSomething() {\n        }\n\n        public override string ToString() {\n            return \"\";\n        }\n    }\n\n" +
+					"    class Program {\n        static void Main() {\n            new Svc().Run(1);\n        }\n    }\n}\n",
+			},
+			want: []string{"Svc.cs:Orphan"},
+		},
+		{
+			name: "typescript private method nobody calls",
+			sources: map[string]string{
+				"svc.ts": "import { x } from 'x';\n\nexport class Svc {\n  constructor(private dep: Dep) {}\n\n  run(v: number): number {\n    return this.helper(v);\n  }\n\n" +
+					"  private helper(v: number): number {\n    return v + 1;\n  }\n\n  private orphan(v: number): number {\n    return v * 2;\n  }\n\n" +
+					"  private handler = (v: number) => {\n    return v;\n  };\n\n  get size(): number {\n    return 1;\n  }\n}\n\nnew Svc(x).run(1);\n",
+			},
+			want: []string{"svc.ts:handler", "svc.ts:orphan"},
+		},
+		{
+			name: "typescript decorated handlers and methods of derived classes are not reported",
+			sources: map[string]string{
+				"ctl.ts": "import { Controller, Get } from '@nestjs/common';\n\n@Controller({ path: 'cats' })\nexport class CatsController {\n" +
+					"  @Get(':id')\n  findOne(id: string) {\n    return id;\n  }\n\n  @Post()\n  @HttpCode(204)\n  create(body: { name: string }) {\n    return body;\n  }\n}\n\n" +
+					"export class Panel extends Component implements OnInit {\n  ngOnInit() {\n  }\n\n  render() {\n    return null;\n  }\n}\n",
+			},
+			want: []string{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deadIn(t, tt.sources, nil); !slices.Equal(got, tt.want) {
+				t.Errorf("dead = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// Found in redis's bundled jemalloc: `CTL_PROTO(epoch)` expands to a use of
+// `epoch_ctl` through `##`. A name assembled by the preprocessor never appears
+// in the source, so in a file that pastes tokens an unused-looking static
+// function is a guess, not a certainty.
+func TestDeadCode_TokenPastingLowersConfidence(t *testing.T) {
+	src := "#define CTL_PROTO(n) static int n##_ctl(int x);\n#define CALL(n) n##_ctl(1)\n\n" +
+		"static int epoch_ctl(int x) {\n    return x;\n}\n\nint run(void) {\n    return CALL(epoch);\n}\n"
+	files := []TokenizedFile{BuildTokenizedFile("ctl.c", src, LangForName("c"))}
+	for _, d := range findDeadFunctions(files, files) {
+		if d.Name == "epoch_ctl" && d.Confidence == "high" {
+			t.Errorf("epoch_ctl reported with high confidence in a file that pastes tokens")
+		}
+	}
+
+	plain := "static int orphan(int x) {\n    return x;\n}\n"
+	files = []TokenizedFile{BuildTokenizedFile("plain.c", plain, LangForName("c"))}
+	got := findDeadFunctions(files, files)
+	if len(got) != 1 || got[0].Confidence != "high" {
+		t.Errorf("an unused static function in a file without token pasting must stay high confidence, got %+v", got)
+	}
+}

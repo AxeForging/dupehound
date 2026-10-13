@@ -20,6 +20,9 @@ type FunctionDef struct {
 	// function calling itself, which does not make it used.
 	BodyStart, BodyEnd int
 	Visibility         defVisibility
+	// VisibilityKnown is set when the extractor already worked out Visibility
+	// from the declaration's modifiers, so visibilityOf must not recompute it.
+	VisibilityKnown bool
 }
 
 func (d FunctionDef) containsToken(i int) bool {
@@ -85,23 +88,12 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 		}
 		if langName == "javascript" || langName == "typescript" {
 			defs = append(defs, jsAssignedFunctionDefs(tf, langName)...)
+			defs = append(defs, jsClassMethodDefs(tf, langName)...)
 			slices.SortFunc(defs, func(a, b FunctionDef) int { return a.DefTok - b.DefTok })
 		}
 	default:
-		// For C, C++, Java, C#, Dart: heuristic — ident followed by `(` at function depth.
-		for i := 0; i < n-1; i++ {
-			tok := tf.Tokens[i]
-			if tok.Kind == TokIdent && i+1 < n && tf.Tokens[i+1].Kind == TokOperator && tf.Tokens[i+1].Text == "(" {
-				// Must be inside/at function scope boundary.
-				if tf.InFunc != nil && i < len(tf.InFunc) && !tf.InFunc[i] {
-					// Check if this token is at the boundary (the token before the func body).
-					// Only include if the next matching { starts a new function body.
-					// Heuristic: if token at position i is NOT inFunc but i+n tokens ARE, it's a def.
-					// For simplicity, only take top-level idents followed by (.
-					defs = appendFuncDef(defs, tf, langName, -1, i)
-				}
-			}
-		}
+		// C, C++, Java, C#, Dart: no function keyword to look for.
+		defs = cFamilyFuncDefs(tf, langName)
 	}
 
 	return defs

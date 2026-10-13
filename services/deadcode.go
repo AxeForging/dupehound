@@ -47,6 +47,7 @@ type deadCodeAnalysis struct {
 func newDeadCodeAnalysis(defFiles []TokenizedFile) *deadCodeAnalysis {
 	a := &deadCodeAnalysis{pending: make(map[string][]*pendingDef)}
 	classes := repoClassNames(defFiles)
+	included := includedFileNames(defFiles)
 	for _, tf := range defFiles {
 		lang := DetectLanguage(tf.Path)
 		if lang == nil {
@@ -63,6 +64,12 @@ func newDeadCodeAnalysis(defFiles []TokenizedFile) *deadCodeAnalysis {
 				continue
 			}
 			def.Visibility = visibilityOf(tf, def)
+			if def.Visibility == visFile && included[filepath.Base(tf.Path)] {
+				// The file is textually included elsewhere (a header, or a C
+				// source pulled in with #include): its file-local functions
+				// are the includer's too.
+				def.Visibility = visRepo
+			}
 			p := &pendingDef{def: def, dir: filepath.Dir(tf.Path)}
 			a.all = append(a.all, p)
 			a.pending[def.Name] = append(a.pending[def.Name], p)
