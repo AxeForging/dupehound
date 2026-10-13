@@ -480,3 +480,120 @@ func TestDeadCode_TokenPastingLowersConfidence(t *testing.T) {
 		t.Errorf("an unused static function in a file without token pasting must stay high confidence, got %+v", got)
 	}
 }
+
+// Defects found by running one real repository per language through the
+// scanner: okhttp (Kotlin), swift-nio (Swift), cats (Scala), kong (Lua),
+// phoenix (Elixir), webpack (JavaScript) and ohmyzsh (shell).
+func TestDeadCode_RemainingLanguages(t *testing.T) {
+	tests := []struct {
+		name    string
+		sources map[string]string
+		want    []string
+	}{
+		{
+			// 2,226 of okhttp's 2,273 findings were annotated functions.
+			name: "kotlin annotated and overriding functions",
+			sources: map[string]string{
+				"CallTest.kt": "class CallTest {\n    @Test\n    fun getReturnsBody() {\n    }\n\n    @ParameterizedTest\n    @ValueSource(ints = [1, 2])\n    fun handlesSizes(n: Int) {\n    }\n\n" +
+					"    @Test fun inline() {\n    }\n\n    override fun toString(): String {\n        return \"\"\n    }\n\n    private fun orphan() {\n    }\n}\n",
+			},
+			want: []string{"CallTest.kt:orphan"},
+		},
+		{
+			name: "kotlin private function with the same name elsewhere does not hide a dead one",
+			sources: map[string]string{
+				"A.kt": "private fun helper(x: Int): Int {\n    return x\n}\n",
+				"B.kt": "private fun helper(x: Int): Int {\n    return x\n}\n\nfun main() {\n    helper(1)\n}\n",
+			},
+			want: []string{"A.kt:helper"},
+		},
+		{
+			// Found in okhttp: `fun Throwable.describe()` was recorded as a
+			// function named Throwable.
+			name: "kotlin extension function is named after the function, not its receiver",
+			sources: map[string]string{
+				"Ext.kt": "fun Throwable.describe(): String {\n    return \"\"\n}\n\nfun <T> List<T>.second(): T {\n    return this[1]\n}\n\n" +
+					"private fun Char.isOrphan(): Boolean {\n    return true\n}\n\nfun main() {\n    Throwable().describe()\n    listOf(1, 2).second()\n}\n",
+			},
+			want: []string{"Ext.kt:isOrphan"},
+		},
+		{
+			// Found in webpack's test cases: `function fn() {}` followed by
+			// callbacks that call it.
+			name: "function with an empty body called from a later callback",
+			sources: map[string]string{
+				"module.js": "import * as ns from './ns';\n\nfunction orphan() {}\n\nfunction fn() {}\n\nit('works', () => {\n  fn(ns.a);\n  fn(ns.b);\n});\n",
+			},
+			want: []string{"module.js:orphan"},
+		},
+		{
+			// 2,064 of swift-nio's 2,416 findings were XCTest methods.
+			name: "swift XCTest methods, overrides and objc entry points",
+			sources: map[string]string{
+				"Tests/ChannelTests.swift": "final class ChannelTests: XCTestCase {\n    func testWritesAreFlushed() throws {\n    }\n\n    override func setUp() {\n    }\n\n" +
+					"    @objc func handleTap() {\n    }\n\n    @inlinable\n    func orphanHelper() {\n    }\n\n    private func privateOrphan() {\n    }\n}\n",
+			},
+			want: []string{"ChannelTests.swift:orphanHelper", "ChannelTests.swift:privateOrphan"},
+		},
+		{
+			// 859 of cats' 1,094 findings were implicit definitions, which the
+			// compiler resolves by type, never by name.
+			name: "scala implicit and overriding definitions",
+			sources: map[string]string{
+				"IdT.scala": "object IdT {\n  implicit def catsDataShowForIdT[A](implicit F: Show[A]): Show[IdT[A]] = {\n    Show.show(_.toString)\n  }\n\n" +
+					"  override def toString: String = {\n    \"\"\n  }\n\n  @Test\n  def checksLaw(): Unit = {\n  }\n\n  private def orphan(x: Int): Int = {\n    x\n  }\n}\n",
+			},
+			want: []string{"IdT.scala:orphan"},
+		},
+		{
+			// `for … do … end` closes once, not twice: counting both `for` and
+			// `do` left every function's body open to the end of the file.
+			name: "lua local function called after a loop",
+			sources: map[string]string{
+				"listeners.lua": "local function parse_listeners(values)\n  for i, v in ipairs(values) do\n    print(v)\n  end\n  while false do\n    print(1)\n  end\n" +
+					"  repeat\n    print(2)\n  until true\n  return values\nend\n\nlocal function orphan(x)\n  for i = 1, x do\n    print(i)\n  end\n  return 2\nend\n\n" +
+					"local M = {}\n\nfunction M.load(conf)\n  return parse_listeners(conf)\nend\n\nreturn M\n",
+				"init.lua": "local m = require(\"listeners\")\nm.load({})\n",
+			},
+			want: []string{"listeners.lua:orphan"},
+		},
+		{
+			name: "elixir private function called from a later function",
+			sources: map[string]string{
+				"server.ex": "defmodule Server do\n  def run(args) do\n    if iex_running?() do\n      set_label(args)\n    end\n  end\n\n" +
+					"  defp iex_running? do\n    true\n  end\n\n  defp set_label(x) do\n    x\n  end\n\n  defp orphan(x) do\n    x\n  end\n\n  def start do\n    run([])\n  end\nend\n\nServer.start()\n",
+			},
+			want: []string{"server.ex:orphan"},
+		},
+		{
+			name: "ruby method called from a later method",
+			sources: map[string]string{
+				"job.rb": "class Job\n  def perform(x)\n    return prepare(x) if x\n    finish(x)\n  end\n\n  def prepare(x)\n    x\n  end\n\n  def finish(x)\n    x\n  end\n\n  def orphan\n    1\n  end\n\n  def start\n    perform(1)\n  end\nend\n\nJob.new.start\n",
+			},
+			want: []string{"job.rb:orphan"},
+		},
+		{
+			// A named function expression's name is only visible inside it.
+			name: "javascript named function expression is not a callable definition",
+			sources: map[string]string{
+				"extract.js": "module.exports = function extractUrlAndGlobal(value) {\n  return value;\n};\n\nconst cb = function onDone(err) {\n  return err;\n};\n\n" +
+					"run(function handler() {\n  return 1;\n});\n\nfunction orphan() {\n  return 2;\n}\n\ncb();\n",
+			},
+			want: []string{"extract.js:orphan"},
+		},
+		{
+			name: "shell completion function registered by name",
+			sources: map[string]string{
+				"cake.plugin.zsh": "_cakephp3 () {\n  compadd one two\n}\n\n__helper ()\n{\n  echo hi\n}\n\norphan_fn() {\n  echo no\n}\n\ncompdef _cakephp3 cake\n__helper\n",
+			},
+			want: []string{"cake.plugin.zsh:orphan_fn"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deadIn(t, tt.sources, nil); !slices.Equal(got, tt.want) {
+				t.Errorf("dead = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

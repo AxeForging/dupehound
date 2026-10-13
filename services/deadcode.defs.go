@@ -40,7 +40,13 @@ func appendFuncDef(defs []FunctionDef, tf TokenizedFile, langName string, kwIdx,
 	// before any block opens, and whatever block comes next belongs to
 	// something else.
 	for k := tokIdx + 1; k < bodyStart-1; k++ {
-		if t := tf.Tokens[k]; t.Kind == TokOperator && (t.Text == ";" || t.Text == "=>") && tf.Tokens[k+1].Text != "{" {
+		t := tf.Tokens[k]
+		if t.Kind != TokOperator {
+			continue
+		}
+		// A `}` before the span opens means this function's own (empty) body
+		// already closed; `;` or a bare `=>` means it never had a block.
+		if t.Text == "}" || ((t.Text == ";" || t.Text == "=>") && tf.Tokens[k+1].Text != "{") {
 			bodyStart, bodyEnd = -1, -1
 			break
 		}
@@ -68,10 +74,11 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 		tf.Funcs = slices.Clone(tf.Funcs)
 		slices.SortFunc(tf.Funcs, byStart)
 	}
-	if langName == "python" {
+	if langName == "python" || langName == "ruby" {
 		// Python bodies are delimited by indentation, which the token stream
-		// does not carry; the recorded spans are approximate. Without a
-		// trustworthy body there is no telling a self-call from a real one.
+		// does not carry, and Ruby's `x if y` modifiers open no block; the
+		// recorded spans are approximate in both. Without a trustworthy body
+		// there is no telling a self-call from a real one.
 		tf.Funcs = nil
 	}
 	switch langName {
@@ -82,7 +89,14 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 			if tok := tf.Tokens[i]; tok.Kind != TokKeyword || !funcKwSet[tok.Text] {
 				continue
 			}
-			if j := namedFuncIdent(tf.Tokens, i, langName == "go"); j >= 0 {
+			if (langName == "javascript" || langName == "typescript") && isFunctionExpression(tf.Tokens, i) {
+				continue
+			}
+			j := namedFuncIdent(tf.Tokens, i, langName == "go")
+			if langName == "kotlin" {
+				j = kotlinFuncIdent(tf.Tokens, i)
+			}
+			if j >= 0 {
 				defs = appendFuncDef(defs, tf, langName, i, j)
 			}
 		}
@@ -103,7 +117,8 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 // the first recorded function span that opens after it. Spans are produced in
 // source order by markFunctionBodies.
 func bodySpanAfter(funcs []FuncSpan, nameIdx int) (start, end int) {
-	i := sort.Search(len(funcs), func(i int) bool { return funcs[i].Start > nameIdx })
+	// `>=`: in the def/end languages a span opens at the name itself.
+	i := sort.Search(len(funcs), func(i int) bool { return funcs[i].Start >= nameIdx })
 	if i == len(funcs) {
 		return -1, -1
 	}
@@ -178,6 +193,54 @@ func namedFuncIdent(tokens []Token, kwIdx int, goReceiver bool) int {
 			return j
 		}
 		if tok.Kind == TokOperator && (tok.Text == "(" || tok.Text == "{") {
+			return -1
+		}
+	}
+	return -1
+}
+
+// isFunctionExpression reports whether the `function` keyword at kwIdx is used
+// as a value — assigned, passed, returned — rather than declared. A name on a
+// function expression is visible only inside that function, so nothing else
+// could ever call it.
+func isFunctionExpression(tokens []Token, kwIdx int) bool {
+	i := kwIdx - 1
+	if i >= 0 && tokens[i].Text == "async" {
+		i--
+	}
+	if i < 0 {
+		return false
+	}
+	prev := tokens[i]
+	if prev.Kind == TokOperator {
+		switch prev.Text {
+		case "=", "(", ",", ":", "?", "!", "&&", "||", "??", "=>", "[", "+", "-":
+			return true
+		}
+		return false
+	}
+	switch prev.Text + prev.OrigText {
+	case "return", "new", "typeof", "yield", "await", "void", "delete", "throw", "in", "of":
+		return true
+	}
+	return false
+}
+
+// kotlinFuncIdent returns the index of the name declared by the `fun` at kwIdx.
+// The name is the identifier right before the parameter list; what precedes it
+// may be type parameters and an extension receiver: `fun <T> List<T>.second()`.
+func kotlinFuncIdent(tokens []Token, kwIdx int) int {
+	for j := kwIdx + 1; j < len(tokens) && j-kwIdx <= 40; j++ {
+		if tokens[j].Kind != TokOperator {
+			continue
+		}
+		switch tokens[j].Text {
+		case "(":
+			if tokens[j-1].Kind == TokIdent && j-1 > kwIdx {
+				return j - 1
+			}
+			return -1 // anonymous: `fun(x: Int): Int { … }`
+		case "{", "=", ";":
 			return -1
 		}
 	}

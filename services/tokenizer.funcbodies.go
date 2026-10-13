@@ -45,11 +45,11 @@ func markFunctionBodies(tokens []Token, lang *domain.Language) ([]bool, []FuncSp
 	case "python":
 		funcs = markPythonFunctions(tokens, inFunc)
 	case "ruby":
-		funcs = markDefEndFunctions(tokens, inFunc, "def", "end")
+		funcs = markDefEndFunctions(tokens, inFunc, "ruby")
 	case "elixir":
-		funcs = markDefEndFunctions(tokens, inFunc, "", "end")
+		funcs = markDefEndFunctions(tokens, inFunc, "elixir")
 	case "lua":
-		funcs = markDefEndFunctions(tokens, inFunc, "function", "end")
+		funcs = markDefEndFunctions(tokens, inFunc, "lua")
 	case "sql":
 		funcs = markSQLFunctions(tokens, inFunc)
 	default:
@@ -249,7 +249,8 @@ func isOpenBrace(tok Token) bool {
 // opens at braceIdx as in-function. The braces themselves are not marked.
 // Returns the index of the last marked token (braceIdx when the body is empty).
 func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) int {
-	return markNestedBody(tokens, inFunc, braceIdx, func(t Token) int {
+	return markNestedBody(tokens, inFunc, braceIdx, func(i int) int {
+		t := tokens[i]
 		if t.Kind != TokOperator {
 			return 0
 		}
@@ -268,11 +269,11 @@ func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) int {
 // (openIdx when the body is empty). nesting reports what a token does to the
 // depth: +1 opens a level, -1 closes one, 0 leaves it alone. Brace bodies,
 // SQL BEGIN/END and def/end blocks differ only in that function.
-func markNestedBody(tokens []Token, inFunc []bool, openIdx int, nesting func(Token) int) int {
+func markNestedBody(tokens []Token, inFunc []bool, openIdx int, nesting func(i int) int) int {
 	depth := 1
 	end := openIdx
 	for j := openIdx + 1; j < len(tokens) && depth > 0; j++ {
-		depth += nesting(tokens[j])
+		depth += nesting(j)
 		if depth > 0 {
 			inFunc[j] = true
 			end = j
@@ -433,7 +434,8 @@ func markSQLFunctions(tokens []Token, inFunc []bool) []FuncSpan {
 			continue
 		}
 		name := funcNameAfterKeyword(tokens, i)
-		end := markNestedBody(tokens, inFunc, beginIdx, func(t Token) int {
+		end := markNestedBody(tokens, inFunc, beginIdx, func(i int) int {
+			t := tokens[i]
 			if t.Kind != TokKeyword {
 				return 0
 			}
@@ -452,48 +454,88 @@ func markSQLFunctions(tokens []Token, inFunc []bool) []FuncSpan {
 	return funcs
 }
 
-// markDefEndFunctions marks tokens between def and end keywords (Ruby, Elixir).
-func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) []FuncSpan {
-	defKeywords := map[string]bool{"def": true}
-	if defKw != "" {
-		defKeywords = map[string]bool{defKw: true}
-	}
-	// Elixir has multiple def-like keywords.
-	if defKw == "" {
-		defKeywords = map[string]bool{
-			"def": true, "defp": true, "defmacro": true, "defmacrop": true,
-		}
-	}
-	nestKeywords := map[string]bool{
-		"do": true, "class": true, "module": true,
-		"if": true, "case": true, "cond": true,
-		"for": true, "while": true, "repeat": true,
-	}
+// markDefEndFunctions marks function bodies in the languages that close a
+// block with `end`: Ruby, Elixir and Lua.
+func markDefEndFunctions(tokens []Token, inFunc []bool, lang string) []FuncSpan {
+	defKeywords := funcKeywords[lang]
 	var funcs []FuncSpan
-	n := len(tokens)
-	for i := 0; i < n; i++ {
-		t := tokens[i]
-		if t.Kind != TokKeyword || !defKeywords[t.Text] {
+	for i := 0; i < len(tokens); i++ {
+		if t := tokens[i]; t.Kind != TokKeyword || !defKeywords[t.Text] {
 			continue
 		}
 		name := funcNameAfterKeyword(tokens, i)
-		// Find matching end keyword, tracking nested def/end/do pairs.
-		end := markNestedBody(tokens, inFunc, i, func(t Token) int {
-			switch {
-			case t.Kind != TokKeyword:
-				return 0
-			case defKeywords[t.Text] || nestKeywords[t.Text]:
-				return 1
-			case t.Text == endKw:
-				return -1
-			}
-			return 0
-		})
+		end := markNestedBody(tokens, inFunc, i, endBlockNesting(tokens, lang, defKeywords))
 		if end > i {
 			funcs = append(funcs, FuncSpan{Start: i + 1, End: end, Name: name})
 		}
 	}
 	return funcs
+}
+
+// endBlockNesting returns, for one function definition, the callback that says
+// what each following token does to the block depth. What opens a block that
+// an `end` will close differs per language, and getting it wrong leaves the
+// body open to the end of the file:
+//
+//   - Lua: `do`, `if` and `function` open one; `for … do` and `while … do` are
+//     closed by the single `end` of their `do`; `repeat` is closed by `until`.
+//   - Elixir: only `do` and `fn` open one — `if x do`, `case x do` and the
+//     definition's own `def name do` are all just that `do`. The keyword form
+//     `do: value` opens nothing.
+//   - Ruby: every construct keyword opens one.
+func endBlockNesting(tokens []Token, lang string, defKeywords map[string]bool) func(i int) int {
+	word := func(i int) string {
+		if i < len(tokens) && tokens[i].Kind == TokKeyword {
+			return tokens[i].Text
+		}
+		return ""
+	}
+	switch lang {
+	case "lua":
+		return func(i int) int {
+			switch w := word(i); {
+			case w == "do" || w == "if" || w == "repeat" || defKeywords[w]:
+				return 1
+			case w == "end" || w == "until":
+				return -1
+			}
+			return 0
+		}
+	case "elixir":
+		ownDoSeen := false
+		return func(i int) int {
+			switch w := word(i); {
+			case w == "do" && i+1 < len(tokens) && tokens[i+1].Kind == TokOperator && tokens[i+1].Text == ":":
+				if !ownDoSeen {
+					// `def name, do: value` has no `end` of its own.
+					ownDoSeen = true
+					return -1
+				}
+				return 0
+			case w == "do" && !ownDoSeen:
+				ownDoSeen = true // the definition's own block; already counted
+				return 0
+			case w == "do" || w == "fn":
+				return 1
+			case w == "end":
+				return -1
+			}
+			return 0
+		}
+	default: // ruby
+		nest := strSet("do", "class", "module", "if", "case", "cond", "for", "while", "repeat")
+		return func(i int) int {
+			switch w := word(i); {
+			case w == "":
+				return 0
+			case defKeywords[w] || nest[w]:
+				return 1
+			case w == "end":
+				return -1
+			}
+			return 0
+		}
+	}
 }
 
 // markLogic returns the per-token mask of executable code. See

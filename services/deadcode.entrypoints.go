@@ -63,6 +63,8 @@ func isFrameworkInvoked(tf TokenizedFile, def FunctionDef, classes map[string]bo
 		return inTestFile && (strings.HasPrefix(name, "test_") || xunitHooks[name])
 	case "php":
 		return inTestFile && (strings.HasPrefix(name, "test") || xunitHooks[name])
+	case "kotlin", "scala", "swift":
+		return isAnnotatedOrOverriding(tf.Tokens, def, inTestFile)
 	case "rust":
 		// A leading underscore is Rust's own "intentionally unused" marker.
 		return strings.HasPrefix(name, "_") ||
@@ -261,6 +263,14 @@ func visibilityOf(tf TokenizedFile, def FunctionDef) defVisibility {
 	if def.VisibilityKnown {
 		return def.Visibility
 	}
+	if def.Lang == "kotlin" || def.Lang == "scala" || def.Lang == "swift" {
+		for _, w := range modifierWords(tf.Tokens, def.KwTok) {
+			if w == "private" || w == "fileprivate" {
+				return visFile
+			}
+		}
+		return visRepo
+	}
 	toks := tf.Tokens
 	switch def.Lang {
 	case "go":
@@ -303,4 +313,57 @@ func isJSModule(tokens []Token) bool {
 		}
 	}
 	return false
+}
+
+// modifierWords returns the words that qualify the declaration whose keyword
+// is at kwIdx: those before it on its line, and those on annotation lines
+// directly above. These languages end statements at the line break, so the
+// previous `;` or brace is no guide to where a declaration starts.
+func modifierWords(tokens []Token, kwIdx int) []string {
+	start := kwIdx
+	for start > 0 && tokens[start-1].Line == tokens[kwIdx].Line {
+		start--
+	}
+	// Extend over annotation lines above: each begins with `@`.
+	for start > 0 {
+		lineStart := start - 1
+		for lineStart > 0 && tokens[lineStart-1].Line == tokens[start-1].Line {
+			lineStart--
+		}
+		if tokens[lineStart].Text != "@" {
+			break
+		}
+		start = lineStart
+	}
+	words := make([]string, 0, kwIdx-start)
+	for i := start; i < kwIdx; i++ {
+		words = append(words, tokens[i].Text+tokens[i].OrigText)
+	}
+	return words
+}
+
+// swiftRuntimeAttributes hand a Swift function to the Objective-C runtime, the
+// app lifecycle or a test harness. Most Swift attributes (`@inlinable`,
+// `@discardableResult`, `@available`) do nothing of the kind, so unlike in
+// Kotlin an attribute alone is not a reason to skip a function.
+var swiftRuntimeAttributes = strSet("objc", "IBAction", "IBOutlet", "IBSegueAction", "main", "Test", "NSManaged", "UIApplicationMain")
+
+// isAnnotatedOrOverriding reports whether a Kotlin, Scala or Swift function is
+// reached without being named: it overrides a member, is registered through an
+// annotation, is a Scala implicit (resolved by type), or is an XCTest method.
+func isAnnotatedOrOverriding(tokens []Token, def FunctionDef, inTestFile bool) bool {
+	words := modifierWords(tokens, def.KwTok)
+	for i, w := range words {
+		switch {
+		case w == "override":
+			return true
+		case w == "implicit" && def.Lang == "scala":
+			return true
+		case w == "@" && def.Lang != "swift":
+			return true
+		case w == "@" && i+1 < len(words) && swiftRuntimeAttributes[words[i+1]]:
+			return true
+		}
+	}
+	return def.Lang == "swift" && inTestFile && strings.HasPrefix(def.Name, "test")
 }
