@@ -74,7 +74,10 @@ func getFileCommitCount(repoRoot, file string, churnDays int) (int, error) {
 
 // sortByChurn re-sorts clones by ChurnScore descending (highest churn first).
 func sortByChurn(clones []domain.Clone) {
-	slices.SortStableFunc(clones, func(a, b domain.Clone) int {
-		return cmp.Or(cmp.Compare(b.ChurnScore, a.ChurnScore), cmp.Compare(b.LineCount, a.LineCount))
-	})
+	slices.SortStableFunc(clones, mostChurnedFirst)
+}
+
+// mostChurnedFirst orders clones by churn, then by size.
+func mostChurnedFirst(a, b domain.Clone) int {
+	return cmp.Or(cmp.Compare(b.ChurnScore, a.ChurnScore), cmp.Compare(b.LineCount, a.LineCount))
 }

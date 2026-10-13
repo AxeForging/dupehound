@@ -195,10 +195,7 @@ func buildFileStats(clones []domain.Clone, fileLineCount map[string]int) []domai
 		})
 	}
 
-	// Most duplicated first; the file name makes the order total and stable.
-	slices.SortFunc(stats, func(a, b domain.FileStats) int {
-		return cmp.Or(cmp.Compare(b.DuplicationPct, a.DuplicationPct), cmp.Compare(a.File, b.File))
-	})
+	slices.SortFunc(stats, mostDuplicatedFirst)
 
 	return stats
 }
@@ -224,4 +221,10 @@ func countDuplicateLines(clones []domain.Clone) int {
 // tiebreak so the order is total and repeatable.
 func largestFirst(a, b domain.Clone) int {
 	return cmp.Or(cmp.Compare(b.LineCount, a.LineCount), cmp.Compare(a.Hash, b.Hash))
+}
+
+// mostDuplicatedFirst orders files by duplication, highest first; the file name
+// makes the order total and stable.
+func mostDuplicatedFirst(a, b domain.FileStats) int {
+	return cmp.Or(cmp.Compare(b.DuplicationPct, a.DuplicationPct), cmp.Compare(a.File, b.File))
 }
