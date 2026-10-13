@@ -3,7 +3,6 @@ package services
 import (
 	"bytes"
 	"os"
-	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
 )
@@ -22,18 +21,11 @@ func buildInstances(files []TokenizedFile, starts []globalPos, totalTokens int) 
 // buildSingleInstance creates a single CloneInstance with lazy preview and
 // best-effort enclosing-function attribution.
 func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) domain.CloneInstance {
-	toks := files[fileIdx].Tokens
-	startLine := toks[pos].Line
-	endIdx := pos + totalTokens - 1
-	if endIdx >= len(toks) {
-		endIdx = len(toks) - 1
-	}
-	// A string literal can span lines (heredocs, raw and triple-quoted strings);
-	// the instance ends where its last token ends, not where it starts.
-	endLine := toks[endIdx].Line
-	if last := toks[endIdx]; last.Kind == TokString {
-		endLine += strings.Count(last.OrigText, "\n")
-	}
+	tf := files[fileIdx]
+	startLine := tf.lineAt(pos)
+	endIdx := min(pos+totalTokens-1, tf.numTokens()-1)
+	// The instance ends where its last token ends, not where it starts.
+	endLine := tf.endLineAt(endIdx)
 	preview := loadPreviewLines(files[fileIdx].Path, startLine, endLine)
 
 	return domain.CloneInstance{

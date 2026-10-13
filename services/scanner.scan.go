@@ -156,21 +156,34 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 			continue
 		}
 
-		// Fail before the machine does. The check runs as files are read, so a
-		// tree far too large for the budget is rejected early.
+		// Stay inside the budget. When holding every token would exceed it,
+		// fall back to low-memory mode: files are kept as a compact index and
+		// re-read only where a clone needs their text. When even that does
+		// not fit, stop before the machine does.
 		budget.add(len(data), len(tf.Tokens))
+		if budget.exceeded() && !budget.compact {
+			budget.compact = true
+			for i := range tokenizedFiles {
+				tokenizedFiles[i] = tokenizedFiles[i].compacted(minTokens, opts.WholeFile, DetectLanguage(tokenizedFiles[i].Path))
+			}
+			helpers.Log.Warn().Str("budget", formatBytes(opts.MaxMemory)).
+				Msg("switching to low-memory mode to stay within --max-memory: type-1/2 detection is unaffected, type-3 is skipped")
+		}
 		if budget.exceeded() {
 			return nil, fmt.Errorf("%w: needs more than %s after %d of %d files (raise --max-memory, or narrow the scan with --include / --exclude)",
 				helpers.ErrMemoryBudget, formatBytes(opts.MaxMemory), scannedFiles+1, len(files))
 		}
+		if budget.compact {
+			tf = tf.compacted(minTokens, opts.WholeFile, lang)
+		}
 
 		tokenizedFiles = append(tokenizedFiles, tf)
 		scannedFiles++
-		helpers.Log.Debug().Str("file", path).Int("tokens", len(tf.Tokens)).Msg("tokenized")
+		helpers.Log.Debug().Str("file", path).Int("tokens", tf.numTokens()).Msg("tokenized")
 	}
 
 	helpers.Log.Debug().
-		Str("estimate", formatBytes(budget.estimate)).
+		Str("estimate", formatBytes(budget.estimate())).
 		Str("budget", formatBytes(opts.MaxMemory)).
 		Msg("memory estimate for exact detection")
 

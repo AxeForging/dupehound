@@ -22,7 +22,11 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool, whol
 	posToHash := make([][]uint64, len(files))
 	windows := 0
 	for fi, tf := range files {
-		posToHash[fi] = windowHashes(tf, minTokens, wholeFile)
+		if tf.compact != nil {
+			posToHash[fi] = tf.compact.hashes // computed when the file was compacted
+		} else {
+			posToHash[fi] = windowHashes(tf, minTokens, wholeFile)
+		}
 		for _, h := range posToHash[fi] {
 			if h != 0 {
 				windows++
@@ -73,6 +77,7 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool, whol
 
 	// Step 4: sweep left-to-right. For each uncovered candidate, gather its group,
 	// extend the block as far as all members agree, then mark the block as covered.
+	tokens := newTokenCache(files)
 	covered := make([][]bool, len(files))
 	for fi := range files {
 		covered[fi] = make([]bool, len(posToHash[fi]))
@@ -213,15 +218,15 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool, whol
 			lineCount = instances[0].EndLine - instances[0].StartLine + 1
 		}
 
-		cloneType, similarity := classifyClone(files, starts, totalTokens)
+		cloneType, similarity := classifyClone(tokens, starts, totalTokens)
 
 		// Fingerprint the FULL extended block (not just the seed window) so the
 		// hash is a stable, content-based identity: every instance shares the
 		// same normalized structure, so the fingerprint is independent of file
 		// order, position, and line numbers. Baseline ratcheting and hash-based
 		// suppression rules rely on this stability.
-		ref := files[starts[0].FileIdx]
-		fingerprint := hashWindow(ref.Tokens[starts[0].Pos : starts[0].Pos+totalTokens])
+		ref := tokens.of(starts[0].FileIdx)
+		fingerprint := hashWindow(ref[starts[0].Pos : starts[0].Pos+totalTokens])
 
 		clones = append(clones, domain.Clone{
 			Hash:       fmt.Sprintf("%016x", fingerprint),
@@ -412,12 +417,12 @@ func windowInFunc(inFunc []bool, pos, size int) bool {
 // the original token text across all instances.
 // If all tokens (including identifier names, literals) are identical → type-1 (similarity 1.0).
 // If structure matches but some identifiers/literals differ → type-2 (similarity 1.0).
-func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (string, float64) {
+func classifyClone(tokens *tokenCache, starts []globalPos, totalTokens int) (string, float64) {
 	// Caller guarantees len(starts) >= 2.
-	ref := files[starts[0].FileIdx].Tokens[starts[0].Pos : starts[0].Pos+totalTokens]
+	ref := tokens.of(starts[0].FileIdx)[starts[0].Pos : starts[0].Pos+totalTokens]
 
 	for _, s := range starts[1:] {
-		other := files[s.FileIdx].Tokens[s.Pos : s.Pos+totalTokens]
+		other := tokens.of(s.FileIdx)[s.Pos : s.Pos+totalTokens]
 		for i := range ref {
 			if ref[i].OrigText != other[i].OrigText {
 				return domain.CloneType2, 1.0
@@ -426,6 +431,46 @@ func classifyClone(files []TokenizedFile, starts []globalPos, totalTokens int) (
 	}
 
 	return domain.CloneType1, 1.0
+}
+
+// tokenCacheLimit bounds how many re-lexed tokens the cache holds in low-memory
+// mode — about 100 MB — before it is emptied and refilled.
+const tokenCacheLimit = 2_000_000
+
+// tokenCache hands out a file's tokens. Files held in full answer directly;
+// files held as a compact index are re-lexed from disk and kept for a while,
+// since the clones of one file tend to be processed together.
+type tokenCache struct {
+	files  []TokenizedFile
+	loaded map[int][]Token
+	held   int
+}
+
+func newTokenCache(files []TokenizedFile) *tokenCache {
+	return &tokenCache{files: files, loaded: make(map[int][]Token)}
+}
+
+func (c *tokenCache) of(fileIdx int) []Token {
+	tf := c.files[fileIdx]
+	if tf.compact == nil {
+		return tf.Tokens
+	}
+	if toks, ok := c.loaded[fileIdx]; ok {
+		return toks
+	}
+	toks := tf.materialized().Tokens
+	if len(toks) != tf.numTokens() {
+		// The file changed on disk since it was indexed. Pad so positions stay
+		// in range; the clone is then classified on what can still be read.
+		toks = append(toks, make([]Token, max(tf.numTokens()-len(toks), 0))...)
+	}
+	if c.held+len(toks) > tokenCacheLimit {
+		clear(c.loaded)
+		c.held = 0
+	}
+	c.loaded[fileIdx] = toks
+	c.held += len(toks)
+	return toks
 }
 
 // hashWindow hashes a token window for structural clone detection.

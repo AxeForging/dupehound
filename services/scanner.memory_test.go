@@ -94,7 +94,7 @@ func TestScan_MemoryBudgetLimitsType3ButKeepsExactResults(t *testing.T) {
 		t.Fatalf("fixture must yield exact and type-3 clones unrestricted: exact=%d type-3=%d partial=%v", exactFull, fuzzyFull, partial)
 	}
 
-	exact, fuzzy, partial, reason := count(ScanOptions{MaxMemory: fits.estimate + 1024})
+	exact, fuzzy, partial, reason := count(ScanOptions{MaxMemory: fits.estimate() + 1024})
 	if exact != exactFull {
 		t.Errorf("exact clones under budget = %d, want %d (budget must never reduce type-1/2)", exact, exactFull)
 	}

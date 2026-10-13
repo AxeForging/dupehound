@@ -111,8 +111,10 @@ Options:
                        match, and import statements are ignored. 'function' looks inside one
                        function body at a time (the behaviour before this option existed)
   --max-memory         Memory budget, e.g. 2G or 512M [default: auto = half of system or
-                       container memory, 0 = unlimited]. Type-3 detection is skipped when
-                       it would not fit (partial result); a scan that cannot fit at all
+                       container memory, 0 = unlimited]. A scan that would exceed it
+                       switches to low-memory mode: files are held as a compact index and
+                       re-read on demand. Type-1/2 results are identical; type-3 detection
+                       is skipped (partial result). If even that does not fit, the scan
                        stops with an error instead of being killed by the OS
   --baseline           Compare against a baseline file: recorded clones are accepted
                        debt, only NEW clones (or grown instance counts) fail the scan

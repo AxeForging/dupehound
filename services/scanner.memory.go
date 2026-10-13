@@ -20,6 +20,11 @@ const (
 	// sorted copy of that hash, and its coverage flag.
 	bytesPerToken = 48 + 2 + 8 + 8 + 1
 
+	// bytesPerCompactToken is what a token costs in low-memory mode: its
+	// window hash, its line, the transient sorted copy of the hash and its
+	// coverage flag. The token itself and the source text are not kept.
+	bytesPerCompactToken = 8 + 4 + 8 + 1
+
 	// heapHeadroom scales what the scan holds up to what the process occupies.
 	// Go's collector lets the heap grow to about twice the live data before it
 	// runs, and the report (clone previews, encoded output) comes on top.
@@ -38,8 +43,12 @@ const (
 
 // memoryBudget tracks the estimated memory of a scan against a limit.
 type memoryBudget struct {
-	limit     int64 // 0 = no budget
-	estimate  int64
+	limit       int64 // 0 = no budget
+	sourceBytes int64
+	tokens      int64
+	// compact is set once the scan has fallen back to low-memory mode, where a
+	// file is held as a compact index instead of its tokens and source.
+	compact   bool
 	prevLimit int64
 }
 
@@ -62,20 +71,34 @@ func (b *memoryBudget) release() {
 
 // add accounts for one tokenized file.
 func (b *memoryBudget) add(sourceBytes, tokens int) {
-	b.estimate += int64(heapHeadroom * float64(int64(sourceBytes)+int64(tokens)*bytesPerToken))
+	b.sourceBytes += int64(sourceBytes)
+	b.tokens += int64(tokens)
+}
+
+// estimate is what the scan is expected to occupy through exact detection.
+func (b *memoryBudget) estimate() int64 {
+	held := b.sourceBytes + b.tokens*bytesPerToken
+	if b.compact {
+		held = b.tokens * bytesPerCompactToken
+	}
+	return int64(heapHeadroom * float64(held))
 }
 
 func (b *memoryBudget) exceeded() bool {
-	return b.limit > 0 && b.estimate > b.limit
+	return b.limit > 0 && b.estimate() > b.limit
 }
 
 // remaining is what is left for type-3 detection: 0 when there is no budget,
 // otherwise at least 1 so that "nothing left" is not mistaken for "no limit".
+// Low-memory mode leaves nothing: type-3 needs every token.
 func (b *memoryBudget) remaining() int64 {
 	if b.limit <= 0 {
 		return 0
 	}
-	return max(b.limit-b.estimate, 1)
+	if b.compact {
+		return 1
+	}
+	return max(b.limit-b.estimate(), 1)
 }
 
 // fuzzyIndexBytes estimates the memory type-3 detection needs for the given

@@ -149,6 +149,43 @@ real duplicated code. That is a sample, not a precision figure.
 
 kubernetes in file scope, exact mode: 13.0 s, 3.7 GB peak, 40,883 clones.
 
+### Low-memory mode, implemented on the same branch
+
+When holding every token would exceed `--max-memory`, the scan keeps each file
+as a compact index — one window hash and one line number per token — and
+re-lexes a file from disk only when one of its clones has to be classified.
+Type-3 detection, which needs every token, is skipped and the report is marked
+partial. Dead-code analysis re-reads the files it needs one at a time.
+
+Findings (clones, previews, dead functions) are identical to an unconstrained
+exact scan on all seven repositories and on kubernetes:
+
+| repo | unconstrained | low-memory | budget |
+|---|---:|---:|---:|
+| rails | 2.1s / 533 MB | 3.3s / 366 MB | 400M |
+| guava | 3.7s / 964 MB | 5.2s / 509 MB | 500M |
+| terraform | 3.2s / 742 MB | 4.3s / 501 MB | 500M |
+| kubernetes | 13.1s / 3.5 GB | 14.6s / 1.76 GB | 2G |
+
+This is not disk spill: memory is still linear in repository size, at roughly a
+third of the cost. kubernetes at a 1 GB budget still stops with an error.
+
+### The thirteen languages not previously checked on real code
+
+One repository per language (okhttp, cats, swift-nio, redis, abseil-cpp,
+Newtonsoft.Json, riverpod, phoenix, kong, ggplot2, ohmyzsh, webpack, postgres).
+
+- No clone range runs past the end of its file in any of them.
+- Against jscpd with comments ignored and generated files excluded, dupehound
+  covers 88–93% of jscpd's duplicated lines in Kotlin, Swift, C, C++, Lua,
+  JavaScript and SQL, 80% in Scala and 78% in shell. C# (62%) and Dart (47%) are
+  lower for reasons that are by design: jscpd counts repeated text inside
+  multi-line string literals, and Dart's remainder is generated fixture files.
+  Elixir and R have no jscpd support and were checked for integrity only.
+- Dead-code findings before → after the fixes this run prompted: Kotlin
+  2,273 → 21, Swift 2,416 → 74, Scala 1,094 → 114, Lua 476 → 1, Elixir 60 → 19,
+  JavaScript 315 → 129, redis (C) high-confidence 538 → 2.
+
 ## Problems this spec addresses
 
 ### P1 — Memory is unbounded

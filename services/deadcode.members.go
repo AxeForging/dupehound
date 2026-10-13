@@ -323,17 +323,12 @@ func appendJSMembers(defs []FunctionDef, tf TokenizedFile, langName string, open
 // includedFileNames returns the base names of the files named by `#include`
 // directives anywhere in files.
 func includedFileNames(files []TokenizedFile) map[string]bool {
-	names := make(map[string]bool)
-	for _, tf := range files {
-		toks := tf.Tokens
-		for i := 0; i+2 < len(toks); i++ {
-			if !isOpText(toks, i, "#") || toks[i+1].OrigText+toks[i+1].Text != "include" || toks[i+2].Kind != TokString {
-				continue
-			}
-			names[filepath.Base(strings.Trim(toks[i+2].OrigText, "\"<>"))] = true
+	return collectNames(files, func(toks []Token, i int) string {
+		if i+2 >= len(toks) || !isOpText(toks, i, "#") || toks[i+1].OrigText+toks[i+1].Text != "include" || toks[i+2].Kind != TokString {
+			return ""
 		}
-	}
-	return names
+		return filepath.Base(strings.Trim(toks[i+2].OrigText, "\"<>"))
+	})
 }
 
 // pastesTokens reports whether the file uses the preprocessor's `##` operator.

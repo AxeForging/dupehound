@@ -207,11 +207,23 @@ func enclosingOpenBrace(tokens []Token, idx int) int {
 
 // repoClassNames returns the names of the classes defined in files.
 func repoClassNames(files []TokenizedFile) map[string]bool {
+	return collectNames(files, func(toks []Token, i int) string {
+		if i+1 < len(toks) && toks[i].Kind == TokKeyword && toks[i].Text == "class" && toks[i+1].Kind == TokIdent {
+			return toks[i+1].OrigText
+		}
+		return ""
+	})
+}
+
+// collectNames gathers, across files, the non-empty names nameAt reports for
+// each token position. Files held in compact form are re-read one at a time.
+func collectNames(files []TokenizedFile, nameAt func(toks []Token, i int) string) map[string]bool {
 	names := make(map[string]bool)
 	for _, tf := range files {
-		for i := 0; i+1 < len(tf.Tokens); i++ {
-			if tf.Tokens[i].Kind == TokKeyword && tf.Tokens[i].Text == "class" && tf.Tokens[i+1].Kind == TokIdent {
-				names[tf.Tokens[i+1].OrigText] = true
+		toks := tf.materialized().Tokens
+		for i := range toks {
+			if name := nameAt(toks, i); name != "" {
+				names[name] = true
 			}
 		}
 	}

@@ -1,6 +1,11 @@
 package services
 
-import "github.com/AxeForging/dupehound/domain"
+import (
+	"os"
+	"strings"
+
+	"github.com/AxeForging/dupehound/domain"
+)
 
 // TokenizedFile: one lexed source file with the per-token masks detection reads.
 
@@ -33,6 +38,94 @@ type TokenizedFile struct {
 	// DataLiterals span is logic that merely lives in a table, so it is exempt
 	// from the rule above.
 	FuncLiterals []TokenSpan
+
+	// compact, when set, replaces Tokens and the per-token masks: the file is
+	// held as an index sufficient for exact detection. See compacted.
+	compact *compactIndex
+}
+
+// compactIndex is the low-memory form of a tokenized file: one window hash and
+// one line number per token. Everything else exact detection needs about a
+// clone — its token text, for classifying and fingerprinting it — is re-lexed
+// from disk for the few files a clone actually touches.
+type compactIndex struct {
+	hashes []uint64
+	lines  []int32
+	// extraLines records, for the string tokens that span several lines, how
+	// many lines beyond their first they cover.
+	extraLines map[int32]int32
+	lang       *domain.Language
+}
+
+// compacted returns the low-memory form of tf for a detection run with the
+// given window size and scope. Function, data-literal and function-literal
+// spans are kept; they are small and attribution needs them.
+func (tf TokenizedFile) compacted(minTokens int, wholeFile bool, lang *domain.Language) TokenizedFile {
+	if tf.compact != nil {
+		return tf
+	}
+	idx := &compactIndex{
+		hashes: windowHashes(tf, minTokens, wholeFile),
+		lines:  make([]int32, len(tf.Tokens)),
+		lang:   lang,
+	}
+	for i, tok := range tf.Tokens {
+		idx.lines[i] = int32(tok.Line)
+		if tok.Kind == TokString {
+			if extra := strings.Count(tok.OrigText, "\n"); extra > 0 {
+				if idx.extraLines == nil {
+					idx.extraLines = make(map[int32]int32)
+				}
+				idx.extraLines[int32(i)] = int32(extra)
+			}
+		}
+	}
+	return TokenizedFile{
+		Path: tf.Path, Funcs: tf.Funcs, DataLiterals: tf.DataLiterals, FuncLiterals: tf.FuncLiterals, compact: idx,
+	}
+}
+
+// materialized returns tf with its tokens and masks present, re-lexing the file
+// from disk when it is held in compact form. A file that can no longer be read
+// comes back empty.
+func (tf TokenizedFile) materialized() TokenizedFile {
+	if tf.compact == nil {
+		return tf
+	}
+	data, err := os.ReadFile(tf.Path)
+	if err != nil {
+		return TokenizedFile{Path: tf.Path}
+	}
+	return BuildTokenizedFileWithIgnore(tf.Path, string(data), tf.compact.lang, nil)
+}
+
+// numTokens is the number of tokens in the file, in either form.
+func (tf TokenizedFile) numTokens() int {
+	if tf.compact != nil {
+		return len(tf.compact.lines)
+	}
+	return len(tf.Tokens)
+}
+
+// lineAt is the line the token at i starts on.
+func (tf TokenizedFile) lineAt(i int) int {
+	if tf.compact != nil {
+		return int(tf.compact.lines[i])
+	}
+	return tf.Tokens[i].Line
+}
+
+// endLineAt is the line the token at i ends on: later than lineAt for a string
+// literal that spans lines (heredocs, raw and triple-quoted strings).
+func (tf TokenizedFile) endLineAt(i int) int {
+	if tf.compact != nil {
+		return int(tf.compact.lines[i] + tf.compact.extraLines[int32(i)])
+	}
+	line := tf.Tokens[i].Line
+	if tok := tf.Tokens[i]; tok.Kind == TokString {
+		line += strings.Count(tok.OrigText, "\n")
+	}
+	return line
 }
 
 // BuildTokenizedFileWithIgnore tokenizes a source file, applying inline suppression

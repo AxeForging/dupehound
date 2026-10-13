@@ -104,6 +104,9 @@ New code goes in the file that owns the concern. If none does, add
   Scanning another repository from here applies this repository's excludes.
 - Python function spans are approximate (the token stream has no indentation).
 - Type-3 detection only looks inside function bodies, in either scope.
+- In low-memory mode a `TokenizedFile` has no `Tokens`: use `numTokens`,
+  `lineAt`, `endLineAt`, or `materialized()` to re-read it. Reading `.Tokens`
+  directly in detection or dead-code code breaks that mode silently.
 - Directories named `build`, `dist`, `target`, `testdata` and `vendor` are
   always skipped.
 

@@ -53,6 +53,7 @@ func newDeadCodeAnalysis(defFiles []TokenizedFile) *deadCodeAnalysis {
 		if lang == nil {
 			continue
 		}
+		tf = tf.materialized() // re-lexed here when the scan is in low-memory mode
 		defs := extractFunctionDefs(tf, lang.Name)
 		for k, def := range defs {
 			// A body-less definition (`func f() {}`, a declaration) has no span
@@ -185,7 +186,7 @@ func (a *deadCodeAnalysis) dead() []domain.DeadFunc {
 func findDeadFunctions(defFiles, usageFiles []TokenizedFile) []domain.DeadFunc {
 	a := newDeadCodeAnalysis(defFiles)
 	for _, tf := range usageFiles {
-		a.observeSource(tf.Path, tf.Tokens)
+		a.observeSource(tf.Path, tf.materialized().Tokens)
 	}
 	return a.dead()
 }
@@ -229,7 +230,7 @@ func scanDeadCode(root string, defFiles []TokenizedFile, maxFileSize int64) []do
 	seen := make(map[string]bool, len(defFiles))
 	for _, tf := range defFiles {
 		seen[tf.Path] = true
-		a.observeSource(tf.Path, tf.Tokens)
+		a.observeSource(tf.Path, tf.materialized().Tokens)
 	}
 
 	// filepath.Walk, like collectFiles: the two must agree on what the tree is.
