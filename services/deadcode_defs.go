@@ -85,7 +85,7 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 		}
 		if langName == "javascript" || langName == "typescript" {
 			defs = append(defs, jsAssignedFunctionDefs(tf, langName)...)
-			sort.Slice(defs, func(i, j int) bool { return defs[i].DefTok < defs[j].DefTok })
+			slices.SortFunc(defs, func(a, b FunctionDef) int { return a.DefTok - b.DefTok })
 		}
 	default:
 		// For C, C++, Java, C#, Dart: heuristic — ident followed by `(` at function depth.

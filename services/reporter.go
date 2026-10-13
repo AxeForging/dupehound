@@ -1,10 +1,11 @@
 package services
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/AxeForging/dupehound/domain"
@@ -48,16 +49,10 @@ func FormatReport(report *domain.Report, format string, opts FormatOptions) (str
 func sortClonesByImpact(clones []domain.Clone) []domain.Clone {
 	sorted := make([]domain.Clone, len(clones))
 	copy(sorted, clones)
-	sort.Slice(sorted, func(i, j int) bool {
-		impactI := sorted[i].LineCount * max(len(sorted[i].Instances)-1, 1)
-		impactJ := sorted[j].LineCount * max(len(sorted[j].Instances)-1, 1)
-		if impactI != impactJ {
-			return impactI > impactJ
-		}
-		if sorted[i].TokenCount != sorted[j].TokenCount {
-			return sorted[i].TokenCount > sorted[j].TokenCount
-		}
-		return sorted[i].Hash < sorted[j].Hash // total order for stable output
+	impact := func(c domain.Clone) int { return c.LineCount * max(len(c.Instances)-1, 1) }
+	// Hash is the last key so the order is total and the output stable.
+	slices.SortFunc(sorted, func(a, b domain.Clone) int {
+		return cmp.Or(cmp.Compare(impact(b), impact(a)), cmp.Compare(b.TokenCount, a.TokenCount), cmp.Compare(a.Hash, b.Hash))
 	})
 	return sorted
 }

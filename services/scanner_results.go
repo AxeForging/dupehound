@@ -1,9 +1,10 @@
 package services
 
 import (
+	"cmp"
 	"math"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/AxeForging/dupehound/domain"
 )
@@ -58,9 +59,15 @@ func filterBaselineKnown(clones []domain.Clone, showAll bool) []domain.Clone {
 	if showAll {
 		return clones
 	}
+	return clonesWithout(clones, func(c domain.Clone) bool { return c.Baseline })
+}
+
+// clonesWithout returns the clones drop does not select. The result is never
+// nil, so an empty list still renders as [] in JSON output.
+func clonesWithout(clones []domain.Clone, drop func(domain.Clone) bool) []domain.Clone {
 	result := make([]domain.Clone, 0, len(clones))
 	for _, c := range clones {
-		if !c.Baseline {
+		if !drop(c) {
 			result = append(result, c)
 		}
 	}
@@ -72,13 +79,7 @@ func filterSuppressed(clones []domain.Clone, includeSuppressed bool) []domain.Cl
 	if includeSuppressed {
 		return clones
 	}
-	result := make([]domain.Clone, 0, len(clones))
-	for _, c := range clones {
-		if !c.Suppressed {
-			result = append(result, c)
-		}
-	}
-	return result
+	return clonesWithout(clones, func(c domain.Clone) bool { return c.Suppressed })
 }
 
 // overlapSubsumeFrac is the fraction of an instance's lines that must be
@@ -98,12 +99,7 @@ const overlapSubsumeFrac = 0.6
 func deduplicateOverlapping(clones []domain.Clone) []domain.Clone {
 	// Sort largest first so the biggest description of a region wins.
 	// The Hash tiebreak makes the kept order deterministic when sizes are equal.
-	sort.Slice(clones, func(i, j int) bool {
-		if clones[i].LineCount != clones[j].LineCount {
-			return clones[i].LineCount > clones[j].LineCount
-		}
-		return clones[i].Hash < clones[j].Hash
-	})
+	slices.SortFunc(clones, largestFirst)
 
 	// Kept instance ranges, indexed by file, each tagged with the kept clone
 	// it belongs to so the subsume check can require a single common clone.
@@ -199,11 +195,9 @@ func buildFileStats(clones []domain.Clone, fileLineCount map[string]int) []domai
 		})
 	}
 
-	sort.Slice(stats, func(i, j int) bool {
-		if stats[i].DuplicationPct != stats[j].DuplicationPct {
-			return stats[i].DuplicationPct > stats[j].DuplicationPct
-		}
-		return stats[i].File < stats[j].File // total order for stable output
+	// Most duplicated first; the file name makes the order total and stable.
+	slices.SortFunc(stats, func(a, b domain.FileStats) int {
+		return cmp.Or(cmp.Compare(b.DuplicationPct, a.DuplicationPct), cmp.Compare(a.File, b.File))
 	})
 
 	return stats
@@ -224,4 +218,10 @@ func countDuplicateLines(clones []domain.Clone) int {
 		}
 	}
 	return len(seen)
+}
+
+// largestFirst orders clones by size, biggest first, with the hash as a
+// tiebreak so the order is total and repeatable.
+func largestFirst(a, b domain.Clone) int {
+	return cmp.Or(cmp.Compare(b.LineCount, a.LineCount), cmp.Compare(a.Hash, b.Hash))
 }

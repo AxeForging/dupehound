@@ -112,20 +112,11 @@ func isImportStatement(tokens []Token, k int, lang string) bool {
 	case "csharp":
 		if word(k) == "namespace" {
 			// File-scoped `namespace X;` only; a block namespace holds code.
-			for j := k + 1; j < len(tokens) && tokens[j].Line == tokens[k].Line; j++ {
-				if tokens[j].Text == "{" {
-					return false
-				}
-			}
-			return tokens[min(k+1, len(tokens)-1)].Line == tokens[k].Line
+			return !opensBlockOnLine(tokens, k) && tokens[min(k+1, len(tokens)-1)].Line == tokens[k].Line
 		}
 	case "php":
 		if word(k) == "namespace" {
-			for j := k + 1; j < len(tokens) && tokens[j].Line == tokens[k].Line; j++ {
-				if tokens[j].Text == "{" {
-					return false
-				}
-			}
+			return !opensBlockOnLine(tokens, k)
 		}
 	case "dart":
 		if word(k) == "export" || word(k) == "part" || word(k) == "library" {
@@ -134,4 +125,14 @@ func isImportStatement(tokens []Token, k int, lang string) bool {
 		}
 	}
 	return true
+}
+
+// opensBlockOnLine reports whether a `{` follows the token at k on its line.
+func opensBlockOnLine(tokens []Token, k int) bool {
+	for j := k + 1; j < len(tokens) && tokens[j].Line == tokens[k].Line; j++ {
+		if tokens[j].Text == "{" {
+			return true
+		}
+	}
+	return false
 }

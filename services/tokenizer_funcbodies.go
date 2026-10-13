@@ -1,7 +1,7 @@
 package services
 
 import (
-	"sort"
+	"slices"
 
 	"github.com/AxeForging/dupehound/domain"
 )
@@ -96,30 +96,14 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) []
 			} else {
 				name = funcNameAfterKeyword(tokens, i)
 			}
-			// Track brace depth from the opening brace.
-			depth := 1
-			end := braceIdx
-			for j := braceIdx + 1; j < n && depth > 0; j++ {
-				if tokens[j].Kind == TokOperator {
-					switch tokens[j].Text {
-					case "{":
-						depth++
-					case "}":
-						depth--
-					}
-				}
-				if depth > 0 {
-					inFunc[j] = true
-					end = j
-				}
-			}
+			end := markBraceBody(tokens, inFunc, braceIdx)
 			if end > braceIdx {
 				funcs = append(funcs, FuncSpan{Start: braceIdx + 1, End: end, Name: name})
 			}
 		}
 		if lang.Name == "shell" {
 			funcs = append(funcs, markShellPosixFunctions(tokens, inFunc)...)
-			sort.Slice(funcs, func(i, j int) bool { return funcs[i].Start < funcs[j].Start })
+			slices.SortFunc(funcs, func(a, b FuncSpan) int { return a.Start - b.Start })
 		}
 	} else {
 		// Languages without func keywords (Java, C, C++, C#, Dart):
@@ -265,18 +249,30 @@ func isOpenBrace(tok Token) bool {
 // opens at braceIdx as in-function. The braces themselves are not marked.
 // Returns the index of the last marked token (braceIdx when the body is empty).
 func markBraceBody(tokens []Token, inFunc []bool, braceIdx int) int {
-	n := len(tokens)
-	depth := 1
-	end := braceIdx
-	for j := braceIdx + 1; j < n && depth > 0; j++ {
-		if tokens[j].Kind == TokOperator {
-			switch tokens[j].Text {
-			case "{":
-				depth++
-			case "}":
-				depth--
-			}
+	return markNestedBody(tokens, inFunc, braceIdx, func(t Token) int {
+		if t.Kind != TokOperator {
+			return 0
 		}
+		switch t.Text {
+		case "{":
+			return 1
+		case "}":
+			return -1
+		}
+		return 0
+	})
+}
+
+// markNestedBody marks every token after openIdx as in-function until the
+// nesting opened there closes, and returns the index of the last token marked
+// (openIdx when the body is empty). nesting reports what a token does to the
+// depth: +1 opens a level, -1 closes one, 0 leaves it alone. Brace bodies,
+// SQL BEGIN/END and def/end blocks differ only in that function.
+func markNestedBody(tokens []Token, inFunc []bool, openIdx int, nesting func(Token) int) int {
+	depth := 1
+	end := openIdx
+	for j := openIdx + 1; j < len(tokens) && depth > 0; j++ {
+		depth += nesting(tokens[j])
 		if depth > 0 {
 			inFunc[j] = true
 			end = j
@@ -321,25 +317,7 @@ func jsFindBodyBrace(tokens []Token, closeParen int) int {
 // parameter list (as opposed to a control-flow condition such as `if (...)`). It
 // finds the matching `(` and rejects it when introduced by a control keyword.
 func jsParenIsFunctionParams(tokens []Token, closeParen int) bool {
-	depth := 1
-	open := -1
-	for k := closeParen - 1; k >= 0; k-- {
-		if tokens[k].Kind != TokOperator {
-			continue
-		}
-		switch tokens[k].Text {
-		case ")":
-			depth++
-		case "(":
-			depth--
-			if depth == 0 {
-				open = k
-			}
-		}
-		if open >= 0 {
-			break
-		}
-	}
+	open := matchOpenParen(tokens, closeParen)
 	if open < 0 {
 		return false
 	}
@@ -455,23 +433,18 @@ func markSQLFunctions(tokens []Token, inFunc []bool) []FuncSpan {
 			continue
 		}
 		name := funcNameAfterKeyword(tokens, i)
-		// Track BEGIN/END depth.
-		depth := 1
-		end := beginIdx
-		for j := beginIdx + 1; j < n && depth > 0; j++ {
-			if tokens[j].Kind == TokKeyword {
-				switch tokens[j].Text {
-				case "BEGIN", "begin":
-					depth++
-				case "END", "end":
-					depth--
-				}
+		end := markNestedBody(tokens, inFunc, beginIdx, func(t Token) int {
+			if t.Kind != TokKeyword {
+				return 0
 			}
-			if depth > 0 {
-				inFunc[j] = true
-				end = j
+			switch t.Text {
+			case "BEGIN", "begin":
+				return 1
+			case "END", "end":
+				return -1
 			}
-		}
+			return 0
+		})
 		if end > beginIdx {
 			funcs = append(funcs, FuncSpan{Start: beginIdx + 1, End: end, Name: name})
 		}
@@ -505,21 +478,17 @@ func markDefEndFunctions(tokens []Token, inFunc []bool, defKw, endKw string) []F
 		}
 		name := funcNameAfterKeyword(tokens, i)
 		// Find matching end keyword, tracking nested def/end/do pairs.
-		depth := 1
-		end := i
-		for j := i + 1; j < n && depth > 0; j++ {
-			if tokens[j].Kind == TokKeyword {
-				if defKeywords[tokens[j].Text] || nestKeywords[tokens[j].Text] {
-					depth++
-				} else if tokens[j].Text == endKw {
-					depth--
-				}
+		end := markNestedBody(tokens, inFunc, i, func(t Token) int {
+			switch {
+			case t.Kind != TokKeyword:
+				return 0
+			case defKeywords[t.Text] || nestKeywords[t.Text]:
+				return 1
+			case t.Text == endKw:
+				return -1
 			}
-			if depth > 0 {
-				inFunc[j] = true
-				end = j
-			}
-		}
+			return 0
+		})
 		if end > i {
 			funcs = append(funcs, FuncSpan{Start: i + 1, End: end, Name: name})
 		}

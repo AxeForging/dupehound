@@ -270,10 +270,7 @@ func goTypeEnd(tokens []Token, i int) int {
 		return goTypeEnd(tokens, closeIdx+1)
 
 	case t.Kind == TokKeyword && t.Text == "map":
-		if i+1 >= n || tokens[i+1].Kind != TokOperator || tokens[i+1].Text != "[" {
-			return -1
-		}
-		closeIdx := matchDelimiter(tokens, i+1, "[", "]")
+		closeIdx := matchGroupAfter(tokens, i, "[", "]")
 		if closeIdx < 0 {
 			return -1
 		}
@@ -318,10 +315,7 @@ func goTypeEnd(tokens []Token, i int) int {
 // follows the signature tells them apart — only a literal has a body.
 func goFuncLiteralBody(tokens []Token, i int) int {
 	n := len(tokens)
-	if i+1 >= n || tokens[i+1].Kind != TokOperator || tokens[i+1].Text != "(" {
-		return -1
-	}
-	closeParen := matchDelimiter(tokens, i+1, "(", ")")
+	closeParen := matchGroupAfter(tokens, i, "(", ")")
 	if closeParen < 0 {
 		return -1
 	}
@@ -353,4 +347,13 @@ func goFuncLiteralBody(tokens []Token, i int) int {
 		return j
 	}
 	return -1
+}
+
+// matchGroupAfter returns the index of the delimiter closing the group that
+// opens immediately after the token at i, or -1 when no such group follows.
+func matchGroupAfter(tokens []Token, i int, openText, closeText string) int {
+	if i+1 >= len(tokens) || tokens[i+1].Kind != TokOperator || tokens[i+1].Text != openText {
+		return -1
+	}
+	return matchDelimiter(tokens, i+1, openText, closeText)
 }
