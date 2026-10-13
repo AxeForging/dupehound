@@ -295,6 +295,12 @@ dupehound tokenizes source files into a normalized token stream (stripping comme
 
 Detection is restricted to **function and method bodies** — imports, top-level declarations, struct definitions, config blocks, and keyword maps are automatically excluded. This dramatically reduces false positives and focuses on actionable logic duplication.
 
+**Data tables inside functions are excluded too.** The rows of a collection literal are structurally identical by design, so a clone whose every instance falls inside a single literal is reported as data, not duplication — the table-driven test pattern no longer flags itself.
+
+This covers Go (`[]T{…}`, `map[K]V{…}`, `[]struct{…}{…}`), Python (lists and dicts), JavaScript/TypeScript, Ruby, Rust, PHP, Elixir, Swift, Dart, and Lua. Java, C, C++, C# and Kotlin are deliberately left out: there `[` is an index or an array type and `{` is also a block, so a literal cannot be told from code by tokens alone.
+
+Logic still counts. A callback column (`run func(t *testing.T)`, `run: () => {…}`) is checked normally, two identical tables in different places are still flagged, and a short inline `[]T{a, b}` never breaks up the block around it.
+
 ## Output formats
 
 - **text** — human-readable with hotspots, top clones by impact, and full clone list

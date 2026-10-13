@@ -7,14 +7,7 @@ import (
 // BuildTokenizedFile is a test helper that tokenizes a source file without
 // applying any inline-ignore rules.
 func BuildTokenizedFile(path, content string, lang *domain.Language) TokenizedFile {
-	tokens := TokenizeFile(content, lang)
-	inFunc, funcs := markFunctionBodies(tokens, lang)
-	return TokenizedFile{
-		Path:   path,
-		Tokens: tokens,
-		InFunc: inFunc,
-		Funcs:  funcs,
-	}
+	return buildTokenizedFile(path, TokenizeFile(content, lang), lang)
 }
 
 // Detect is a test helper around DetectWithOptions for tests that only need

@@ -22,27 +22,121 @@ type TokenizedFile struct {
 	InFunc  []bool     // per-token: true if inside a function/method body
 	Ignored []bool     // per-token: true if in a dupehound:ignore annotated block
 	Funcs   []FuncSpan // function body spans with best-effort names, for clone attribution
+	// DataLiterals are the token spans of composite data literals written inside
+	// function bodies — `[]T{…}`, `map[K]V{…}`, and the `[]struct{…}{…}` of a
+	// table-driven test. They are not excluded from detection; they are used to
+	// recognise a clone whose every instance sits inside ONE such literal, which
+	// describes a data table rather than duplicated logic.
+	DataLiterals []TokenSpan
+	// FuncLiterals are the bodies of function literals. A body nested inside a
+	// DataLiterals span is logic that merely lives in a table, so it is exempt
+	// from the rule above.
+	FuncLiterals []TokenSpan
 }
 
 // BuildTokenizedFileWithIgnore tokenizes a source file, applying inline suppression
 // markers from both the source (dupehound:ignore comments) and the ignore rules.
 func BuildTokenizedFileWithIgnore(path, content string, lang *domain.Language, rules []IgnoreRule) TokenizedFile {
-	tokens := TokenizeFileWithIgnore(content, lang)
+	return buildTokenizedFile(path, TokenizeFileWithIgnore(content, lang), lang)
+}
+
+// buildTokenizedFile assembles a TokenizedFile from an already-lexed token
+// stream. It is the single place the per-token masks and spans are derived, so
+// the ignore-aware and plain constructors cannot drift apart.
+func buildTokenizedFile(path string, tokens []Token, lang *domain.Language) TokenizedFile {
 	inFunc, funcs := markFunctionBodies(tokens, lang)
 	ignored := markIgnoredBlocks(tokens, inFunc)
-	// Zero out InFunc for ignored tokens so detection skips them.
+
+	// Detection only ever looks at InFunc, so clearing it is how a suppression
+	// takes effect.
 	for i, ign := range ignored {
 		if ign {
 			inFunc[i] = false
 		}
 	}
+
+	dataLiterals := findDataLiteralSpans(tokens, lang)
+
 	return TokenizedFile{
-		Path:    path,
-		Tokens:  tokens,
-		InFunc:  inFunc,
-		Ignored: ignored,
-		Funcs:   funcs,
+		Path:         path,
+		Tokens:       tokens,
+		InFunc:       inFunc,
+		Ignored:      ignored,
+		Funcs:        funcs,
+		DataLiterals: dataLiterals,
+		FuncLiterals: nestedFuncLiterals(findFuncLiteralBodies(tokens, lang, funcs), dataLiterals),
 	}
+}
+
+// nestedFuncLiterals keeps only the function bodies that sit inside a data
+// literal — the `run func(t *testing.T)` column of a table.
+//
+// The narrowing is what makes the exemption safe outside Go, where the spans
+// come from markFunctionBodies and therefore include the enclosing test function
+// itself. Left unfiltered, that outer span would cover every table in the file
+// and exempt all of them, disabling the rule entirely.
+func nestedFuncLiterals(funcSpans, dataLiterals []TokenSpan) []TokenSpan {
+	if len(funcSpans) == 0 || len(dataLiterals) == 0 {
+		return nil
+	}
+	nested := make([]TokenSpan, 0, len(funcSpans))
+	for _, fs := range funcSpans {
+		for _, dl := range dataLiterals {
+			if fs.Start >= dl.Start && fs.End <= dl.End {
+				nested = append(nested, fs)
+				break
+			}
+		}
+	}
+	return nested
+}
+
+// dataLiteralAt returns the index of the data literal wholly containing the
+// token window [pos, pos+length), or -1 when the window is not pure table data.
+//
+// Touching a function literal at all disqualifies the window. Logic written in
+// a table — a `run func(t *testing.T)` column — is still logic, and a window
+// that straddles a func body and the rows around it is not something the "this
+// is just a data table" rule should ever silence.
+func (tf TokenizedFile) dataLiteralAt(pos, length int) int {
+	if len(tf.DataLiterals) == 0 || length <= 0 {
+		return -1
+	}
+	end := pos + length - 1
+	for _, fl := range tf.FuncLiterals {
+		if pos <= fl.End && fl.Start <= end {
+			return -1
+		}
+	}
+	for i, s := range tf.DataLiterals {
+		if pos >= s.Start && end <= s.End {
+			return i
+		}
+	}
+	return -1
+}
+
+// allInsideOneDataLiteral reports whether every instance of a clone group lands
+// in the same composite data literal. The rows of a table are structurally
+// identical by construction, so a "clone" confined to one literal describes a
+// single data table rather than duplicated logic (issue #31). Instances spread
+// across two literals, two functions, or two files are left alone — repeating
+// the same table twice is duplication worth reporting.
+func allInsideOneDataLiteral(files []TokenizedFile, starts []globalPos, totalTokens int) bool {
+	first := starts[0]
+	litIdx := files[first.FileIdx].dataLiteralAt(first.Pos, totalTokens)
+	if litIdx < 0 {
+		return false
+	}
+	for _, s := range starts[1:] {
+		if s.FileIdx != first.FileIdx {
+			return false
+		}
+		if files[s.FileIdx].dataLiteralAt(s.Pos, totalTokens) != litIdx {
+			return false
+		}
+	}
+	return true
 }
 
 // globalPos identifies a window position across all files.
@@ -300,10 +394,28 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 
 		totalTokens := minTokens + extLen
 
+		// Every seed position is marked covered — including ones dropped just
+		// below — so the same region is never reseeded as a second group.
 		for _, s := range starts {
 			for k := 0; k <= extLen; k++ {
 				covered[globalPos{s.FileIdx, s.Pos + k}] = true
 			}
+		}
+
+		// Seeds within one file were spaced minTokens apart, but greedy
+		// extension grew every block to totalTokens, so neighbouring instances
+		// can now overlap. Overlapping windows are one stretch of text counted
+		// several times rather than distinct duplicates, so keep only instances
+		// that stay clear of the previous one.
+		starts = dropOverlappingStarts(starts, totalTokens)
+		if len(starts) < 2 {
+			continue
+		}
+
+		// A group confined to one composite data literal is a table matching
+		// its own rows, not duplicated logic.
+		if allInsideOneDataLiteral(files, starts, totalTokens) {
+			continue
 		}
 
 		instances := buildInstances(files, starts, totalTokens)
@@ -334,6 +446,24 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) []do
 	}
 
 	return clones
+}
+
+// dropOverlappingStarts keeps only the instances of one clone group that do not
+// overlap an instance already kept. starts must be sorted by (FileIdx, Pos);
+// instances in different files can never overlap, so the check is per-file.
+// The first instance is always kept, which keeps the group's fingerprint and
+// classification (both derived from starts[0]) stable.
+func dropOverlappingStarts(starts []globalPos, totalTokens int) []globalPos {
+	kept := make([]globalPos, 0, len(starts))
+	lastFile, lastEnd := -1, 0
+	for _, s := range starts {
+		if s.FileIdx == lastFile && s.Pos < lastEnd {
+			continue
+		}
+		kept = append(kept, s)
+		lastFile, lastEnd = s.FileIdx, s.Pos+totalTokens
+	}
+	return kept
 }
 
 // detectFuzzy finds type-3 near-miss clones using mini-window Jaccard similarity.
@@ -387,6 +517,10 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 		miniSet   []uint64 // sorted, deduped mini-window hashes
 		startLine int
 		endLine   int
+		// dataLiteral is the index of the composite data literal wholly
+		// containing this block, or -1. Resolved once here rather than per
+		// candidate pair, since the pair loop runs millions of times.
+		dataLiteral int
 	}
 
 	var blocks []blockInfo
@@ -434,10 +568,11 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 
 			idx := len(blocks)
 			blocks = append(blocks, blockInfo{
-				key:       blockKey{fi, pos},
-				miniSet:   miniSet,
-				startLine: startLine,
-				endLine:   endLine,
+				key:         blockKey{fi, pos},
+				miniSet:     miniSet,
+				startLine:   startLine,
+				endLine:     endLine,
+				dataLiteral: tf.dataLiteralAt(pos, minTokens),
 			})
 
 			for _, h := range miniSet {
@@ -532,13 +667,17 @@ func detectFuzzy(files []TokenizedFile, minTokens int, threshold float64, maxBuc
 				!fileInScope(inScopeFiles, bb.key.fileIdx) {
 				continue
 			}
-			// Skip same-file overlapping blocks.
+			// Skip same-file overlapping blocks, and blocks that are two
+			// windows over the rows of a single data table (issue #31).
 			if ba.key.fileIdx == bb.key.fileIdx {
 				dist := ba.key.pos - bb.key.pos
 				if dist < 0 {
 					dist = -dist
 				}
 				if dist < minTokens {
+					continue
+				}
+				if ba.dataLiteral >= 0 && ba.dataLiteral == bb.dataLiteral {
 					continue
 				}
 			}
