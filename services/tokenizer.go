@@ -2,7 +2,9 @@ package services
 
 import (
 	"bufio"
+	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/AxeForging/dupehound/domain"
 )
@@ -580,11 +582,11 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 			continue
 		}
 
-		// Python / Ruby triple-quoted strings (must precede single-quote handling).
-		if lang.Name == "python" || lang.Name == "ruby" {
-			if hasPrefix(src, pos, `"""`) || hasPrefix(src, pos, `'''`) {
+		// Triple-quoted multi-line strings (must precede single-quote handling).
+		if q := tripleQuoteLangs[lang.Name]; q != "" && (ch == '"' || ch == '\'') && strings.IndexByte(q, ch) >= 0 {
+			if delim := src[pos:min(pos+3, n)]; delim == `"""` || delim == `'''` {
 				start := pos
-				delim := src[pos : pos+3]
+				startLine := line
 				pos += 3
 				for pos < n {
 					if hasPrefix(src, pos, delim) {
@@ -596,9 +598,19 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 					}
 					pos++
 				}
-				tokens = append(tokens, Token{Kind: TokString, OrigText: src[start:pos], Line: line})
+				tokens = append(tokens, Token{Kind: TokString, OrigText: src[start:pos], Line: startLine})
 				continue
 			}
+		}
+
+		// Rust lifetimes and loop labels (`'a`, `'static`, `'outer:`) open with
+		// the same quote as a char literal but never close. Emit the quote as
+		// punctuation so the name lexes as an identifier, instead of letting the
+		// string scanner swallow the rest of the signature.
+		if lang.Name == "rust" && ch == '\'' && !isRustCharLiteral(src, pos) {
+			tokens = append(tokens, Token{Kind: TokOperator, Text: "'", Line: line})
+			pos++
+			continue
 		}
 
 		// C# string prefixes: @"..." (verbatim), $"..." (interpolated), and the
@@ -668,15 +680,21 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 			for pos < n {
 				c := src[pos]
 				if c == '\\' {
+					// An escaped newline is a line continuation: it is skipped
+					// with the backslash but still has to be counted.
+					if pos+1 < n && src[pos+1] == '\n' {
+						line++
+					}
 					pos += 2
 					continue
 				}
 				if c == '\n' {
-					line++
 					if delim != '`' {
-						// Non-raw strings don't span lines; treat as ended.
+						// Non-raw strings don't span lines; treat as ended. The
+						// newline is left for the main loop, which counts it.
 						break
 					}
+					line++
 				}
 				if c == delim {
 					pos++
@@ -755,6 +773,48 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 	}
 
 	return tokens
+}
+
+// tripleQuoteLangs maps a language to the quote characters that open a
+// triple-quoted multi-line string in it: Python docstrings, Kotlin/Scala raw
+// strings, Swift multi-line literals, Java text blocks, C# raw string literals,
+// Dart multi-line strings and Elixir heredocs. Lexed line by line instead, each
+// line holding an odd number of quotes desynchronises the rest of the file.
+var tripleQuoteLangs = map[string]string{
+	"python": `"'`,
+	"ruby":   `"'`,
+	"dart":   `"'`,
+	"elixir": `"'`,
+	"kotlin": `"`,
+	"scala":  `"`,
+	"swift":  `"`,
+	"java":   `"`,
+	"csharp": `"`,
+}
+
+// isRustCharLiteral reports whether the `'` at pos opens a char literal
+// (`'a'`, `'\n'`, `'\u{1F600}'`) rather than a lifetime or loop label.
+func isRustCharLiteral(src string, pos int) bool {
+	p := pos + 1
+	if p >= len(src) {
+		return false
+	}
+	if src[p] == '\\' {
+		// Escape sequence: the literal closes at the next quote on this line.
+		// The longest escape is `\u{10FFFF}`, so a short lookahead is enough.
+		for p += 2; p < len(src) && p-pos <= 12 && src[p] != '\n'; p++ {
+			if src[p] == '\'' {
+				return true
+			}
+		}
+		return false
+	}
+	if src[p] == '\'' || src[p] == '\n' {
+		return false
+	}
+	_, size := utf8.DecodeRuneInString(src[p:])
+	p += size
+	return p < len(src) && src[p] == '\''
 }
 
 // hasPrefix reports whether src[pos:] starts with prefix.
@@ -1122,6 +1182,10 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) []
 				funcs = append(funcs, FuncSpan{Start: braceIdx + 1, End: end, Name: name})
 			}
 		}
+		if lang.Name == "shell" {
+			funcs = append(funcs, markShellPosixFunctions(tokens, inFunc)...)
+			sort.Slice(funcs, func(i, j int) bool { return funcs[i].Start < funcs[j].Start })
+		}
 	} else {
 		// Languages without func keywords (Java, C, C++, C#, Dart):
 		// Any brace block entered at depth 0 or 1 marks its contents.
@@ -1174,6 +1238,29 @@ func markBraceFunctions(tokens []Token, inFunc []bool, lang *domain.Language) []
 			if n-1 >= s.start {
 				funcs = append(funcs, FuncSpan{Start: s.start, End: n - 1, Name: s.name})
 			}
+		}
+	}
+	return funcs
+}
+
+// markShellPosixFunctions marks the bodies of shell functions written in the
+// portable `name() { … }` form. The bash-only `function name() {` spelling is
+// already found through its keyword, so those are skipped here.
+func markShellPosixFunctions(tokens []Token, inFunc []bool) []FuncSpan {
+	isOp := func(i int, text string) bool {
+		return tokens[i].Kind == TokOperator && tokens[i].Text == text
+	}
+	var funcs []FuncSpan
+	for i := 0; i+3 < len(tokens); i++ {
+		if tokens[i].Kind != TokIdent || !isOp(i+1, "(") || !isOp(i+2, ")") || !isOp(i+3, "{") {
+			continue
+		}
+		if i > 0 && tokens[i-1].Kind == TokKeyword && tokens[i-1].Text == "function" {
+			continue
+		}
+		if end := markBraceBody(tokens, inFunc, i+3); end > i+3 {
+			funcs = append(funcs, FuncSpan{Start: i + 4, End: end, Name: tokens[i].OrigText})
+			i = end
 		}
 	}
 	return funcs
