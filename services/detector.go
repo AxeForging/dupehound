@@ -18,9 +18,19 @@ import (
 // loaded lazily from disk only for files that end up in detected clones.
 type TokenizedFile struct {
 	Path    string
-	Tokens  []Token    // normalized token sequence (no newlines)
-	InFunc  []bool     // per-token: true if inside a function/method body
-	Ignored []bool     // per-token: true if in a dupehound:ignore annotated block
+	Tokens  []Token // normalized token sequence (no newlines)
+	InFunc  []bool  // per-token: true if inside a function/method body
+	Ignored []bool  // per-token: true if in a dupehound:ignore annotated block
+	// Logic marks the tokens that are executable code: inside a function or
+	// method body. For most languages that is InFunc. For the brace languages
+	// without a function keyword (Java, C, C++, C#, Dart) InFunc also covers
+	// class bodies, so Logic narrows it to blocks that follow a parameter list.
+	// Whole-file detection matches loosely inside Logic and strictly outside.
+	Logic []bool
+	// Imports marks the tokens of import, include, use and package statements.
+	// Whole-file detection leaves them out: every file opens with a block of
+	// them, and nobody refactors two files for sharing their imports.
+	Imports []bool
 	Funcs   []FuncSpan // function body spans with best-effort names, for clone attribution
 	// DataLiterals are the token spans of composite data literals written inside
 	// function bodies — `[]T{…}`, `map[K]V{…}`, and the `[]struct{…}{…}` of a
@@ -60,6 +70,8 @@ func buildTokenizedFile(path string, tokens []Token, lang *domain.Language) Toke
 	return TokenizedFile{
 		Path:         path,
 		Tokens:       tokens,
+		Imports:      markImports(tokens, inFunc, lang),
+		Logic:        markLogic(tokens, inFunc, lang),
 		InFunc:       inFunc,
 		Ignored:      ignored,
 		Funcs:        funcs,
@@ -156,6 +168,12 @@ type DetectOptions struct {
 	// boundary and returns the matches found so far (a deterministic PARTIAL
 	// result); type-1/2 clones are unaffected. 0 means no cap.
 	MaxPairs int
+	// WholeFile widens type-1/2 detection from single function bodies to the
+	// whole file, so a clone may span several functions or sit outside any —
+	// a copied class made of small methods, block-style tests, a script.
+	// Outside function bodies identifiers must match by name; see
+	// strictSymbol. Type-3 detection stays within function bodies.
+	WholeFile bool
 	// MaxFuzzyBytes, if > 0, is the memory type-3 detection may use. When its
 	// index would not fit, type-3 detection is skipped as a whole — a
 	// predictable result, unlike analysing whichever files happened to come
@@ -227,7 +245,7 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) ([]domain.Clon
 		return nil, DetectStats{}
 	}
 
-	exact, windows := detectExact(files, opts.MinTokens, opts.InScopeFiles)
+	exact, windows := detectExact(files, opts.MinTokens, opts.InScopeFiles, opts.WholeFile)
 
 	if opts.MinSimilarity >= 1.0 {
 		return exact, DetectStats{}
@@ -255,13 +273,13 @@ func DetectWithOptions(files []TokenizedFile, opts DetectOptions) ([]domain.Clon
 // no participating file is in scope (used by --since for diff-aware scanning).
 // It also returns the number of in-scope windows it examined, which is what
 // sizes the type-3 index.
-func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool) ([]domain.Clone, int) {
+func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool, wholeFile bool) ([]domain.Clone, int) {
 	// Step 1: for each file, compute the hash of every minTokens-wide window.
 	// Windows that are not fully inside a function body hash to 0 and are skipped.
 	posToHash := make([][]uint64, len(files))
 	windows := 0
 	for fi, tf := range files {
-		posToHash[fi] = windowHashes(tf, minTokens)
+		posToHash[fi] = windowHashes(tf, minTokens, wholeFile)
 		for _, h := range posToHash[fi] {
 			if h != 0 {
 				windows++
@@ -492,17 +510,71 @@ func tokenSymbol(t Token) uint64 {
 	return h
 }
 
+// strictSymbol is tokenSymbol for code outside any function body, where
+// structure alone says little: a list of fields, of constants, of signatures
+// has the same shape in every class.
+//
+// Identifiers therefore count by name. Literal values still do not — two
+// statements that differ only in the strings they pass are the same statement —
+// unless exact is set, which the caller does inside a data table: two different
+// tables of the same shape (translations, fixtures, config) are not duplicates.
+func strictSymbol(t Token, exact bool) uint64 {
+	const prime = 1099511628211
+	h := tokenSymbol(t) ^ 0x5bd1e9955bd1e995 // never equal to the loose symbol
+	if t.Kind != TokIdent && !exact {
+		return h
+	}
+	for i := 0; i < len(t.OrigText); i++ {
+		h = (h ^ uint64(t.OrigText[i])) * prime
+	}
+	return h
+}
+
 // windowHashes returns, for every position in tf, the hash of the minTokens
-// tokens starting there — or 0 when the window runs off the file or is not
-// entirely inside a function body.
+// tokens starting there — or 0 when the window runs off the file or leaves the
+// detection scope.
+//
+// The scope is a single function body by default. With wholeFile it is the
+// whole file minus import statements and ignored blocks, and tokens outside
+// function bodies are compared by name (see strictSymbol).
 //
 // It is a rolling hash: each window is derived from the previous one in
 // constant time, instead of rehashing all minTokens tokens at every position.
-func windowHashes(tf TokenizedFile, minTokens int) []uint64 {
+func windowHashes(tf TokenizedFile, minTokens int, wholeFile bool) []uint64 {
 	n := len(tf.Tokens)
 	hashes := make([]uint64, n)
 	if n < minTokens {
 		return hashes
+	}
+	// A hand-built TokenizedFile may carry no masks at all: everything is then
+	// in scope and treated as function code.
+	hasFuncs := len(tf.InFunc) > 0
+	inScope := func(i int) bool {
+		if !wholeFile {
+			return !hasFuncs || tf.InFunc[i]
+		}
+		ignored := len(tf.Ignored) > 0 && tf.Ignored[i]
+		imported := len(tf.Imports) > 0 && tf.Imports[i]
+		return !ignored && !imported
+	}
+	logic := tf.Logic
+	if len(logic) == 0 {
+		logic = tf.InFunc
+	}
+	var inTable []bool // tokens inside a data literal; whole-file mode only
+	if wholeFile && len(tf.DataLiterals) > 0 {
+		inTable = make([]bool, n)
+		for _, span := range tf.DataLiterals {
+			for i := span.Start; i <= span.End && i < n; i++ {
+				inTable[i] = true
+			}
+		}
+	}
+	symbol := func(i int) uint64 {
+		if wholeFile && hasFuncs && !logic[i] {
+			return strictSymbol(tf.Tokens[i], inTable != nil && inTable[i])
+		}
+		return tokenSymbol(tf.Tokens[i])
 	}
 	// topPower is rollingBase^(minTokens-1): the weight of the token leaving
 	// the window.
@@ -510,22 +582,21 @@ func windowHashes(tf TokenizedFile, minTokens int) []uint64 {
 	for i := 1; i < minTokens; i++ {
 		topPower *= rollingBase
 	}
-	masked := len(tf.InFunc) > 0
 	var h uint64
-	inFunc := 0 // tokens of the current window that are inside a function
+	scoped := 0 // tokens of the current window that are in scope
 	for i := 0; i < n; i++ {
 		if i >= minTokens {
-			h -= tokenSymbol(tf.Tokens[i-minTokens]) * topPower
-			if masked && tf.InFunc[i-minTokens] {
-				inFunc--
+			h -= symbol(i-minTokens) * topPower
+			if inScope(i - minTokens) {
+				scoped--
 			}
 		}
-		h = h*rollingBase + tokenSymbol(tf.Tokens[i])
-		if masked && tf.InFunc[i] {
-			inFunc++
+		h = h*rollingBase + symbol(i)
+		if inScope(i) {
+			scoped++
 		}
 		start := i - minTokens + 1
-		if start < 0 || (masked && inFunc != minTokens) {
+		if start < 0 || scoped != minTokens {
 			continue
 		}
 		if h == 0 {
@@ -920,7 +991,7 @@ func buildSingleInstance(files []TokenizedFile, fileIdx, pos, totalTokens int) d
 		File:      files[fileIdx].Path,
 		StartLine: startLine,
 		EndLine:   endLine,
-		Function:  enclosingFuncName(files[fileIdx].Funcs, pos),
+		Function:  funcNameForRange(files[fileIdx].Funcs, pos, endIdx),
 		Lines:     preview,
 	}
 }

@@ -266,58 +266,21 @@ func extractFunctionDefs(tf TokenizedFile, langName string) []FunctionDef {
 		tf.Funcs = nil
 	}
 	switch langName {
-	case "go", "rust", "kotlin", "swift", "scala", "php", "ruby", "lua":
-		// Keyword-based: look for func/fn/fun/def/function keyword followed by an identifier.
+	case "go", "rust", "kotlin", "swift", "scala", "php", "ruby", "lua", "python", "elixir", "javascript", "typescript":
+		// Keyword-based: a func/fn/fun/def/function keyword followed by a name.
 		funcKwSet := funcKeywords[langName]
 		for i := 0; i < n-1; i++ {
-			tok := tf.Tokens[i]
-			if tok.Kind != TokKeyword {
-				continue
-			}
-			if !funcKwSet[tok.Text] {
+			if tok := tf.Tokens[i]; tok.Kind != TokKeyword || !funcKwSet[tok.Text] {
 				continue
 			}
 			if j := namedFuncIdent(tf.Tokens, i, langName == "go"); j >= 0 {
 				defs = appendFuncDef(defs, tf, langName, i, j)
 			}
 		}
-	case "python", "elixir":
-		// def keyword, next ident is function name.
-		defKws := map[string]bool{"def": true, "defp": true, "defmacro": true, "defmacrop": true}
-		for i := 0; i < n-1; i++ {
-			tok := tf.Tokens[i]
-			if tok.Kind == TokKeyword && defKws[tok.Text] {
-				for j := i + 1; j < n; j++ {
-					next := tf.Tokens[j]
-					if next.Kind == TokIdent && next.OrigText != "" {
-						defs = appendFuncDef(defs, tf, langName, i, j)
-						break
-					}
-					if next.Kind == TokOperator && next.Text == ":" {
-						break
-					}
-				}
-			}
+		if langName == "javascript" || langName == "typescript" {
+			defs = append(defs, jsAssignedFunctionDefs(tf, langName)...)
+			sort.Slice(defs, func(i, j int) bool { return defs[i].DefTok < defs[j].DefTok })
 		}
-	case "javascript", "typescript":
-		// function keyword or method definitions (ident followed by `(`).
-		for i := 0; i < n-1; i++ {
-			tok := tf.Tokens[i]
-			if tok.Kind == TokKeyword && tok.Text == "function" {
-				for j := i + 1; j < n; j++ {
-					next := tf.Tokens[j]
-					if next.Kind == TokIdent && next.OrigText != "" {
-						defs = appendFuncDef(defs, tf, langName, i, j)
-						break
-					}
-					if next.Kind == TokOperator && next.Text == "(" {
-						break // anonymous function
-					}
-				}
-			}
-		}
-		defs = append(defs, jsAssignedFunctionDefs(tf, langName)...)
-		sort.Slice(defs, func(i, j int) bool { return defs[i].DefTok < defs[j].DefTok })
 	default:
 		// For C, C++, Java, C#, Dart: heuristic — ident followed by `(` at function depth.
 		for i := 0; i < n-1; i++ {

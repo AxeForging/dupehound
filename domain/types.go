@@ -122,6 +122,7 @@ type ScanConfig struct {
 	ExitZero  bool     `yaml:"exit-zero"`
 	Top       int      `yaml:"top"`
 	Baseline  string   `yaml:"baseline"` // path to a baseline file written with --write-baseline
+	Scope     string   `yaml:"scope"`    // file | function: where type-1/2 clones may lie
 }
 
 // Language defines a programming language and how to strip its comments.

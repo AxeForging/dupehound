@@ -103,6 +103,11 @@ Options:
   --max-file-size      Skip files larger than this many bytes BEFORE reading them
                        [default: 5242880 (5MiB), 0 = unlimited]; oversized files are
                        almost always minified/generated and would dominate memory
+  --scope              Where type-1/2 clones may lie [default: file]. 'file' looks across the
+                       whole file, so a copied class made of small methods or a run of
+                       block-style tests is one finding; outside function bodies names must
+                       match, and import statements are ignored. 'function' looks inside one
+                       function body at a time (the behaviour before this option existed)
   --max-memory         Memory budget, e.g. 2G or 512M [default: auto = half of system or
                        container memory, 0 = unlimited]. Type-3 detection is skipped when
                        it would not fit (partial result); a scan that cannot fit at all

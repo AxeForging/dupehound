@@ -41,6 +41,7 @@ type ScanOptions struct {
 	Baseline       string  // path to a baseline file: known clones become recorded debt, only new ones fail
 	WriteBaseline  string  // path to write a new baseline capturing the current clones as accepted debt
 	MaxMemory      int64   // memory budget in bytes (0 = no budget); see memoryBudget
+	WholeFile      bool    // detect type-1/2 clones across the whole file, not only inside one function body
 }
 
 // ScannerService performs code duplication detection.
@@ -245,6 +246,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		MaxBucket:     opts.MaxBucket,
 		MaxPairs:      opts.MaxPairs,
 		MaxFuzzyBytes: budget.remaining(),
+		WholeFile:     opts.WholeFile,
 		InScopeFiles:  inScopeFiles,
 	})
 	clones = deduplicateOverlapping(clones)

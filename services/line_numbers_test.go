@@ -212,3 +212,51 @@ func TestDetect_CloneLinesAreExactAfterRustLifetimes(t *testing.T) {
 		}
 	}
 }
+
+// A heredoc body is text, not code. Lexed as code it produced a different
+// token stream for every heredoc, so otherwise identical tests never matched.
+func TestTokenize_HeredocBodyIsOneString(t *testing.T) {
+	tests := []struct {
+		name     string
+		lang     string
+		src      string
+		wantLine int // line of MARKER
+	}{
+		{"ruby squiggly", "ruby", "def a\n  x = <<~OUTPUT\n    Prefix Verb URI\n    it's (broken\n  OUTPUT\n  MARKER\nend\n", 6},
+		{"ruby dash", "ruby", "def a\n  run(<<-RUBY, 1)\n    get '/cart', to: 'cart#show'\n  RUBY\n  MARKER\nend\n", 5},
+		{"ruby quoted", "ruby", "x = <<~'EOS'\n  no #{interp} \"here\n  EOS\nMARKER\n", 4},
+		{"ruby two on one line", "ruby", "f(<<~A, <<~B)\n  one (\nA\n  two )\nB\nMARKER\n", 6},
+		{"shell", "shell", "cat <<EOF\nit's a {template\nEOF\nMARKER=1\n", 4},
+		{"shell dash quoted", "shell", "cat <<-'EOF'\n\t$not (expanded\n\tEOF\nMARKER=1\n", 4},
+		{"php heredoc", "php", "<?php\n$a = <<<EOT\n  it's {$x} (text\n  EOT;\nfunction MARKER() {}\n", 5},
+		{"php nowdoc", "php", "<?php\n$a = <<<'EOT'\n  raw ( text\nEOT;\nfunction MARKER() {}\n", 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens := TokenizeFile(tt.src, LangForName(tt.lang))
+			if got := lineOfIdent(tokens, "MARKER"); got != tt.wantLine {
+				t.Errorf("MARKER lexed on line %d, want %d", got, tt.wantLine)
+			}
+			for _, word := range []string{"Prefix", "broken", "cart", "interp", "template", "expanded", "text", "raw", "one", "two"} {
+				if lineOfIdent(tokens, word) != 0 {
+					t.Errorf("heredoc text %q was lexed as an identifier", word)
+				}
+			}
+		})
+	}
+}
+
+// `<<` is also the append operator; it must not start a heredoc.
+func TestTokenize_ShiftOperatorIsNotAHeredoc(t *testing.T) {
+	tests := []struct{ lang, src string }{
+		{"ruby", "list << item\nlist << OTHER\nx = 1 << 4\nMARKER\n"},
+		{"shell", "x=$((1 << 4))\ngrep foo <<< \"$text\"\nMARKER=1\n"},
+		{"php", "<?php\n$x = 1 << 4;\n$y = $x << $z;\nfunction MARKER() {}\n"},
+	}
+	for _, tt := range tests {
+		tokens := TokenizeFile(tt.src, LangForName(tt.lang))
+		if lineOfIdent(tokens, "MARKER") == 0 {
+			t.Errorf("%s: code after `<<` was swallowed as a heredoc body", tt.lang)
+		}
+	}
+}

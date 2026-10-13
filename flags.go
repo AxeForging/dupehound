@@ -165,3 +165,9 @@ var maxMemoryFlag = cli.StringFlag{
 	Value: "auto",
 	Usage: "Memory budget for the scan, e.g. 2G or 512M (auto = half of available system or container memory, 0 = unlimited). Type-3 detection is skipped when it would not fit; a scan that cannot fit at all stops with an error instead of being killed",
 }
+
+var scopeFlag = cli.StringFlag{
+	Name:  "scope",
+	Value: "file",
+	Usage: "Where type-1/2 clones may lie: 'file' (anywhere in the file, spanning functions; outside function bodies names must match, and import statements are ignored) or 'function' (inside one function body only)",
+}

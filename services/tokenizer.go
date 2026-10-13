@@ -531,6 +531,7 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 	pos := 0
 	line := 1
 	var tokens []Token
+	var heredocs []string // terminators of heredocs opened on the current line
 
 	for pos < n {
 		ch := src[pos]
@@ -541,11 +542,31 @@ func TokenizeFile(content string, lang *domain.Language) []Token {
 			continue
 		}
 
-		// Newline: just advance line counter.
+		// Newline: just advance line counter. Heredocs opened on the line
+		// that just ended have their bodies here.
 		if ch == '\n' {
 			line++
 			pos++
+			for _, id := range heredocs {
+				end, resume, ok := heredocBody(src, pos, id)
+				if !ok {
+					break // no terminator: it was not a heredoc after all
+				}
+				tokens = append(tokens, Token{Kind: TokString, OrigText: src[pos:end], Line: line})
+				line += strings.Count(src[pos:resume], "\n")
+				pos = resume
+			}
+			heredocs = heredocs[:0]
 			continue
+		}
+
+		// A heredoc opener (`<<~EOS`, `<<-EOF`, `<<<'EOT'`) is lexed as ordinary
+		// tokens; only its terminator is remembered so the body can be taken as
+		// one string once the line ends.
+		if ch == '<' && heredocLangs[lang.Name] && hasPrefix(src, pos, "<<") {
+			if id := heredocTerminator(src, pos, lang.Name); id != "" {
+				heredocs = append(heredocs, id)
+			}
 		}
 
 		// Skip horizontal whitespace.
@@ -1701,4 +1722,273 @@ func LangForName(name string) *domain.Language {
 		}
 	}
 	return nil
+}
+
+// importStarters lists, per language, the words that open a statement which
+// only brings names into scope or declares where the file lives.
+var importStarters = map[string]map[string]bool{
+	"go":         strSet("import", "package"),
+	"python":     strSet("import", "from"),
+	"javascript": strSet("import"),
+	"typescript": strSet("import"),
+	"java":       strSet("import", "package"),
+	"kotlin":     strSet("import", "package"),
+	"scala":      strSet("import", "package"),
+	"swift":      strSet("import"),
+	"dart":       strSet("import", "export", "part", "library"),
+	"csharp":     strSet("using", "namespace"),
+	"rust":       strSet("use", "extern", "mod"),
+	"c":          strSet("#"),
+	"cpp":        strSet("#", "using"),
+	"php":        strSet("use", "namespace", "require", "require_once", "include", "include_once"),
+	"ruby":       strSet("require", "require_relative", "load"),
+	"elixir":     strSet("import", "alias", "require", "use"),
+	"r":          strSet("library", "require", "source"),
+	"shell":      strSet("source"),
+}
+
+// importModifiers may precede an import starter on its line: `pub use`,
+// `export * from`, `export import`.
+var importModifiers = strSet("pub", "export", "public", "internal", "private", "static", "global")
+
+// markImports returns a per-token mask of import-like statements: the ones in
+// importStarters that begin a line outside any function body. A statement runs
+// to the end of its line, or further while a bracket it opened is still open
+// (`import ( … )`, `use a::{ … };`, `from x import ( … )`), or to its `;`.
+func markImports(tokens []Token, inFunc []bool, lang *domain.Language) []bool {
+	mask := make([]bool, len(tokens))
+	if lang == nil {
+		return mask
+	}
+	starters := importStarters[lang.Name]
+	if len(starters) == 0 {
+		return mask
+	}
+	word := func(i int) string { return tokens[i].Text + tokens[i].OrigText }
+	for i := 0; i < len(tokens); i++ {
+		if inFunc[i] || (i > 0 && tokens[i-1].Line == tokens[i].Line) {
+			continue
+		}
+		// Step over modifiers to the word that decides.
+		k := i
+		for k+1 < len(tokens) && importModifiers[word(k)] && tokens[k+1].Line == tokens[i].Line {
+			k++
+		}
+		if !starters[word(k)] || !isImportStatement(tokens, k, lang.Name) {
+			continue
+		}
+		depth := 0
+		j := i
+		for ; j < len(tokens); j++ {
+			if j > i && depth == 0 && tokens[j].Line != tokens[j-1].Line {
+				break
+			}
+			mask[j] = true
+			if tokens[j].Kind != TokOperator {
+				continue
+			}
+			switch tokens[j].Text {
+			case "(", "{", "[":
+				depth++
+			case ")", "}", "]":
+				depth--
+			case ";":
+				if depth == 0 {
+					j++
+					goto done
+				}
+			}
+		}
+	done:
+		i = j - 1
+	}
+	return mask
+}
+
+// isImportStatement rules out the uses of an import keyword that are code:
+// a C preprocessor line that is not an include, a Rust `mod name { … }` body, a
+// JS re-export is an import but `export function` is not.
+func isImportStatement(tokens []Token, k int, lang string) bool {
+	word := func(i int) string {
+		if i >= len(tokens) {
+			return ""
+		}
+		return tokens[i].Text + tokens[i].OrigText
+	}
+	switch lang {
+	case "c", "cpp":
+		if word(k) == "#" {
+			return word(k+1) == "include" || word(k+1) == "import" || word(k+1) == "pragma"
+		}
+		return word(k+1) == "namespace" // `using namespace std;`
+	case "rust":
+		if word(k) == "mod" {
+			// `mod name;` declares a file; `mod name { … }` holds code.
+			return word(k+2) == ";"
+		}
+		if word(k) == "extern" {
+			return word(k+1) == "crate"
+		}
+	case "csharp":
+		if word(k) == "namespace" {
+			// File-scoped `namespace X;` only; a block namespace holds code.
+			for j := k + 1; j < len(tokens) && tokens[j].Line == tokens[k].Line; j++ {
+				if tokens[j].Text == "{" {
+					return false
+				}
+			}
+			return tokens[min(k+1, len(tokens)-1)].Line == tokens[k].Line
+		}
+	case "php":
+		if word(k) == "namespace" {
+			for j := k + 1; j < len(tokens) && tokens[j].Line == tokens[k].Line; j++ {
+				if tokens[j].Text == "{" {
+					return false
+				}
+			}
+		}
+	case "dart":
+		if word(k) == "export" || word(k) == "part" || word(k) == "library" {
+			// Directives take a string or a name and end the line.
+			return word(k+1) != "" && tokens[k+1].Line == tokens[k].Line
+		}
+	}
+	return true
+}
+
+// markLogic returns the per-token mask of executable code. See
+// TokenizedFile.Logic.
+func markLogic(tokens []Token, inFunc []bool, lang *domain.Language) []bool {
+	if lang == nil || len(funcKeywords[lang.Name]) > 0 {
+		return inFunc
+	}
+	if _, braceHeuristic := funcKeywords[lang.Name]; !braceHeuristic {
+		return inFunc // indentation- or keyword-delimited languages
+	}
+	// A body is a `{ … }` block whose header ends in a parameter list:
+	// `name(args) {`, `name(args) throws E {`, `name(args) const override {`,
+	// a lambda `(args) -> {` / `(args) => {`. Class, struct, enum and
+	// namespace blocks have no `)` in their header and stay outside.
+	logic := make([]bool, len(tokens))
+	var bodyDepths []int // brace depths at which a body block was opened
+	depth := 0
+	for i, tok := range tokens {
+		if tok.Kind == TokOperator {
+			switch tok.Text {
+			case "{":
+				if len(bodyDepths) == 0 && opensBody(tokens, i) {
+					bodyDepths = append(bodyDepths, depth)
+				}
+				depth++
+				continue
+			case "}":
+				depth--
+				if n := len(bodyDepths); n > 0 && bodyDepths[n-1] == depth {
+					bodyDepths = bodyDepths[:n-1]
+					continue
+				}
+			}
+		}
+		logic[i] = len(bodyDepths) > 0 && inFunc[i]
+	}
+	return logic
+}
+
+// opensBody reports whether the `{` at braceIdx follows a parameter list,
+// allowing the qualifiers that can stand between the two.
+func opensBody(tokens []Token, braceIdx int) bool {
+	for i := braceIdx - 1; i >= 0 && braceIdx-i <= 12; i-- {
+		tok := tokens[i]
+		if tok.Kind == TokOperator {
+			switch tok.Text {
+			case ")":
+				return true
+			case "->", "=>", ",", ".", "<", ">", "::", "[", "]", "?":
+				continue // lambda arrow, `throws A, B`, qualified and generic names
+			}
+			return false
+		}
+		// identifiers and keywords: throws, const, noexcept, override, async, …
+	}
+	return false
+}
+
+// heredocLangs are the languages whose heredocs are lexed as string literals.
+var heredocLangs = strSet("ruby", "shell", "php")
+
+// heredocTerminator returns the terminator named by the heredoc opener at pos
+// (which points at `<<`), or "" when the `<<` is something else — a shift, an
+// append, a shell here-string.
+func heredocTerminator(src string, pos int, lang string) string {
+	p := pos + 2
+	at := func(i int) byte {
+		if i < len(src) {
+			return src[i]
+		}
+		return 0
+	}
+	marked := false // carries a marker that only a heredoc has
+	switch lang {
+	case "php":
+		if at(p) != '<' {
+			return ""
+		}
+		p++
+		marked = true
+	case "shell":
+		if at(p) == '<' {
+			return "" // `<<<` is a here-string
+		}
+		if at(p) == '-' {
+			p++
+			marked = true
+		}
+		for at(p) == ' ' {
+			p++
+		}
+	case "ruby":
+		if at(p) == '~' || at(p) == '-' {
+			p++
+			marked = true
+		}
+	}
+	if q := at(p); q == '\'' || q == '"' || q == '`' {
+		p++
+		marked = true
+	}
+	start := p
+	for p < len(src) && isIdentChar(src[p]) {
+		p++
+	}
+	if p == start || (src[start] != '_' && !isLetter(src[start])) {
+		return ""
+	}
+	// Bare `<<name` is also how Ruby spells `list <<name`. By convention a
+	// heredoc terminator is upper case; require that when nothing else marks it.
+	if upper := src[start] >= 'A' && src[start] <= 'Z'; lang == "ruby" && !marked && !upper {
+		return ""
+	}
+	return src[start:p]
+}
+
+// heredocBody locates the body of a heredoc that starts at pos and ends at the
+// line holding terminator id. It returns the end of the body, the position
+// lexing resumes at (just past the terminator), and whether a terminator line
+// was found at all.
+func heredocBody(src string, pos int, id string) (end, resume int, ok bool) {
+	for lineStart := pos; lineStart < len(src); {
+		p := lineStart
+		for p < len(src) && (src[p] == ' ' || src[p] == '\t') {
+			p++
+		}
+		if hasPrefix(src, p, id) && (p+len(id) == len(src) || !isIdentChar(src[p+len(id)])) {
+			return lineStart, p + len(id), true
+		}
+		nl := strings.IndexByte(src[lineStart:], '\n')
+		if nl < 0 {
+			break
+		}
+		lineStart += nl + 1
+	}
+	return 0, 0, false
 }

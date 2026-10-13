@@ -2,8 +2,8 @@
 
 **Status:** draft, awaiting review. Of the *Design* section, only the rolling hash
 (memory step 3), the streaming dead-code usage pass (step 6) and an
-estimate-based `--max-memory` are implemented; disk spill, compact tokens,
-parallel lexing and the recall change are not.
+estimate-based `--max-memory` and the recall change are implemented; disk spill,
+compact tokens and parallel lexing are not.
 The *Already fixed* section describes what shipped on the same branch as this spec.
 
 ## Context
@@ -105,6 +105,49 @@ for exact detection was between 4% and 35% above the measured peak, never below.
 Default-mode memory did not improve: the type-3 index is unchanged. Replacing
 its map with a flat sorted array was tried and reverted — output was identical
 but peak memory rose by 200–800 MB and terraform exceeded 3 GB.
+
+### Recall change, implemented on the same branch
+
+`--scope file` (now the default) detects type-1/2 clones across the whole file.
+Measured with dupehound at Sonar's 100-token threshold; "reported" is duplicate
+lines at default settings.
+
+| repo | Sonar lines found: function → file | Sonar files found | reported lines | wall / peak (file scope) |
+|---|---:|---:|---:|---:|
+| tokio | 38% → 96% | 63% → 94% | +101% | 2.5s / 334 MB |
+| nest | 86% → 94% | 78% → 93% | +14% | 6.7s / 641 MB |
+| django | 77% → 92% | 70% → 94% | +27% | 11.1s / 1.7 GB |
+| rails | 27% → 76% | 32% → 76% | +60% | 11.6s / 1.6 GB |
+| laravel | 57% → 89% | 75% → 96% | +44% | 15.7s / 1.6 GB |
+| guava | 98% → 98% | 91% → 92% | +1% | 5.9s / 0.9 GB |
+| terraform | 85% → 88% | 90% → 93% | +8% | 20.8s / 1.9 GB |
+
+How it works, and why each rule exists:
+
+- Windows may leave a function body and span several, so a class copied
+  wholesale is one clone even when every method is a few lines long.
+- Outside function bodies identifiers must match by name. Declarations are all
+  the same shape; matching them loosely reported every class against every other.
+  For Java, C, C++, C# and Dart "function body" is narrowed to blocks that follow
+  a parameter list, because the existing heuristic also covers class bodies.
+- Literal values may still differ outside function bodies (two statements that
+  differ only in the strings they pass are the same statement) — except inside
+  a data literal, where they must match, so two translation or fixture tables
+  of the same shape are not clones.
+- Import, include, use and package statements are skipped.
+- Type-3 detection is unchanged and stays inside function bodies.
+- Ruby, shell and PHP heredocs are lexed as one string literal.
+
+Against the requirements below: R4 (85% of Sonar's lines) is met on six of
+seven repositories; rails reaches 76%. What rails still misses is repetition
+whose bulk is heredoc text, which Sonar counts line by line and dupehound holds
+as a single token. R5 (reported duplication grows by at most 25%) is not met
+and was the wrong measure: growth is largest exactly where function-only
+detection found least. Twenty findings that only file scope reports were
+sampled at random across tokio, rails, laravel and django; all twenty were
+real duplicated code. That is a sample, not a precision figure.
+
+kubernetes in file scope, exact mode: 13.0 s, 3.7 GB peak, 40,883 clones.
 
 ## Problems this spec addresses
 

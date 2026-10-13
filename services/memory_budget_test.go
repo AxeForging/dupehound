@@ -129,7 +129,7 @@ func TestWindowHashes_AgreeWithDirectHashing(t *testing.T) {
 				tf.Tokens[i] = vocab[rng.Intn(len(vocab))]
 				tf.InFunc[i] = rng.Intn(10) > 0 // an occasional gap between functions
 			}
-			got := windowHashes(tf, minTokens)
+			got := windowHashes(tf, minTokens, false)
 			if len(got) != n {
 				t.Fatalf("len = %d, want %d", len(got), n)
 			}

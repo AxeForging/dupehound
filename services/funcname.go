@@ -31,6 +31,29 @@ func enclosingFuncName(spans []FuncSpan, pos int) string {
 	return name
 }
 
+// funcNameForRange names the function a clone instance covering tokens
+// [pos, end] belongs to. An instance that starts inside a function is
+// attributed to it, as before. One that starts outside — in a signature, or
+// between functions, which whole-file detection allows — is attributed to the
+// named function it overlaps most.
+func funcNameForRange(spans []FuncSpan, pos, end int) string {
+	if name := enclosingFuncName(spans, pos); name != "" {
+		return name
+	}
+	name := ""
+	best := 0
+	for _, s := range spans {
+		if s.Name == "" {
+			continue
+		}
+		if overlap := min(end, s.End) - max(pos, s.Start) + 1; overlap > best {
+			best = overlap
+			name = s.Name
+		}
+	}
+	return name
+}
+
 // funcNameAfterKeyword extracts the function name for keyword-introduced
 // definitions: `func Name(`, `fn name(`, `def name(`, `function a.b:c(`.
 // kwIdx is the token index of the introducing keyword. A parenthesized Go

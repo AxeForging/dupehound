@@ -108,6 +108,18 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		}
 		opts.MaxMemory = budget
 	}
+	// Scope: CLI wins, then config, then the flag's default.
+	scope := c.String("scope")
+	if !c.IsSet("scope") && cfg.Scan.Scope != "" {
+		scope = cfg.Scan.Scope
+	}
+	switch scope {
+	case "file":
+		opts.WholeFile = true
+	case "function":
+	default:
+		return fmt.Errorf("invalid scope %q: must be file or function", scope)
+	}
 	opts.ScanGenerated = c.Bool("scan-generated")
 	if c.IsSet("baseline") {
 		opts.Baseline = c.String("baseline")
