@@ -31,6 +31,7 @@ memory sizing. Everything else is in `services/`, one concern per file:
 | `scanner.results.go` | De-duplication, filters, per-file stats |
 | `scanner.memory.go` | `--max-memory` estimate and enforcement |
 | `scanner.config.go` | `.dupehound.yml` loading and defaults |
+| `scanner.rules.go` | Per-path `rules:`: validation, which rule a file falls under, one detection pass per threshold |
 | `scanner.testprod.go` | Test-file recognition |
 | `deadcode.analysis.go` | Dead-function analysis (definitions in, usages streamed) |
 | `deadcode.defs.go` | Finding definitions in keyword languages |

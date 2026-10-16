@@ -41,6 +41,9 @@ type ScanOptions struct {
 	MaxMemory      int64   // memory budget in bytes (0 = no budget); see memoryBudget
 	WholeFile      bool    // detect type-1/2 clones across the whole file, not only inside one function body
 	MinCloneLines  int     // drop clones spanning fewer lines than this (0 = no floor)
+	// Rules override MinTokens and MinSimilarity per file; see scanner.rules.go.
+	// They must have been validated (LoadConfig does). Nil means no rules.
+	Rules []domain.Rule
 }
 
 // ScannerService performs code duplication detection.
@@ -62,9 +65,42 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		minTokens = 50 // sensible default
 	}
 
+	minSimilarity := opts.MinSimilarity
+	if minSimilarity <= 0 {
+		minSimilarity = 0.70
+	}
+
 	files, err := collectFiles(opts.Path, opts.Exclude, opts.Include, opts.Language)
 	if err != nil {
 		return nil, err
+	}
+	// Per-path rules: settings per collected file, and `skip: true` files
+	// dropped here, like excluded ones. Without rules nothing changes.
+	var rules *ruleSet
+	var settingsOf map[string]fileSettings
+	skippedByRule := 0
+	if len(opts.Rules) > 0 {
+		rs := newRuleSet(opts.Path, minTokens, minSimilarity, opts.Rules)
+		rules = &rs
+		settingsOf = make(map[string]fileSettings, len(files))
+		kept := files[:0]
+		for _, f := range files {
+			s := rs.forFile(f)
+			if s.skip {
+				skippedByRule++
+				continue
+			}
+			settingsOf[f] = s
+			kept = append(kept, f)
+		}
+		files = kept
+	}
+	// fileMinTokens is the threshold that applies to path.
+	fileMinTokens := func(path string) int {
+		if rules == nil {
+			return minTokens
+		}
+		return settingsOf[path].minTokens
 	}
 	if len(files) == 0 {
 		return nil, helpers.ErrNoFilesFound
@@ -145,7 +181,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		tf := BuildTokenizedFileWithIgnore(path, content, lang, ignoreRules)
 
 		// Skip files with too few tokens to form even one window.
-		if len(tf.Tokens) < minTokens {
+		if len(tf.Tokens) < fileMinTokens(path) {
 			scannedFiles++
 			if opts.DeadCode {
 				// Too small to hold a clone, but not too small to hold a
@@ -164,7 +200,8 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		if budget.exceeded() && !budget.compact {
 			budget.compact = true
 			for i := range tokenizedFiles {
-				tokenizedFiles[i] = tokenizedFiles[i].compacted(minTokens, opts.WholeFile, DetectLanguage(tokenizedFiles[i].Path))
+				held := tokenizedFiles[i].Path
+				tokenizedFiles[i] = tokenizedFiles[i].compacted(fileMinTokens(held), opts.WholeFile, DetectLanguage(held))
 			}
 			helpers.Log.Warn().Str("budget", formatBytes(opts.MaxMemory)).
 				Msg("switching to low-memory mode to stay within --max-memory: type-1/2 detection is unaffected, type-3 is skipped")
@@ -174,7 +211,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 				helpers.ErrMemoryBudget, formatBytes(opts.MaxMemory), scannedFiles+1, len(files))
 		}
 		if budget.compact {
-			tf = tf.compacted(minTokens, opts.WholeFile, lang)
+			tf = tf.compacted(fileMinTokens(path), opts.WholeFile, lang)
 		}
 
 		tokenizedFiles = append(tokenizedFiles, tf)
@@ -186,11 +223,6 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		Str("estimate", formatBytes(budget.estimate())).
 		Str("budget", formatBytes(opts.MaxMemory)).
 		Msg("memory estimate for exact detection")
-
-	minSimilarity := opts.MinSimilarity
-	if minSimilarity <= 0 {
-		minSimilarity = 0.70
-	}
 
 	// Diff-aware: resolve the changed-files set BEFORE detection so the
 	// detector can skip clones whose instances are all in unchanged files.
@@ -252,7 +284,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		}
 	}
 
-	clones, detectStats := DetectWithOptions(tokenizedFiles, DetectOptions{
+	detectOpts := DetectOptions{
 		MinTokens:     minTokens,
 		MinSimilarity: minSimilarity,
 		MaxBucket:     opts.MaxBucket,
@@ -260,7 +292,18 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		MaxFuzzyBytes: budget.remaining(),
 		WholeFile:     opts.WholeFile,
 		InScopeFiles:  inScopeFiles,
-	})
+	}
+	var clones []domain.Clone
+	var detectStats DetectStats
+	if rules == nil {
+		clones, detectStats = DetectWithOptions(tokenizedFiles, detectOpts)
+	} else {
+		settings := make([]fileSettings, len(tokenizedFiles))
+		for i, tf := range tokenizedFiles {
+			settings[i] = settingsOf[tf.Path]
+		}
+		clones, detectStats = detectWithRules(tokenizedFiles, settings, detectOpts)
+	}
 	clones = deduplicateOverlapping(clones)
 	if opts.MinCloneLines > 0 {
 		// Applied before anything is counted or annotated, so every total in
@@ -381,6 +424,7 @@ func (s *ScannerService) Scan(opts ScanOptions) (*domain.Report, error) {
 		ScannedFiles:      scannedFiles,
 		SkippedFiles:      skippedFiles,
 		SkippedLargeFiles: skippedLarge,
+		SkippedByRule:     skippedByRule,
 		TotalClones:       len(clones),
 		TotalLines:        totalLines,
 		DuplicateLines:    duplicateLines,

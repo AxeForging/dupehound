@@ -21,6 +21,7 @@ Practical, copy-pasteable recipes for the things dupehound is good at. Each sect
 | Catch duplicates only in changed files | [`--staged`](#pre-commit-hook) or [`--since`](#diff-aware-scanning) |
 | Skip vendor / generated / build dirs | [`--exclude` with `**`](#filtering-files) |
 | Scan only one subtree | [`--include`](#filtering-files) |
+| Use a lower threshold for tests, a higher one for migrations | [per-path rules](#filtering-files) |
 | Hide a known false positive forever | [`.dupehound-ignore`](#suppressing-known-duplicates) |
 | Hide a one-off duplicate inline | [`//dupehound:ignore`](#suppressing-known-duplicates) |
 | Find test-fixture leaks into production code | [`--test-prod`](#testprod-leak-detection) (auto-detected) |
@@ -262,6 +263,51 @@ dupehound scan \
 ```
 
 When `--include` is set, **only** files matching at least one pattern are walked. Without it, all supported source files under `--path` are scanned. `--exclude` always wins over `--include`.
+</details>
+
+<details>
+<summary><b>Per-path thresholds: tests stricter, migrations looser</b></summary>
+
+A Python uv workspace: production at 50 tokens, tests at 25 so copied fakes
+show up, Alembic migrations only when a copy is large, generated clients
+skipped.
+
+```yaml
+# .dupehound.yml
+scan:
+  min-tokens: 50
+  exclude: [".venv/**", "**/__pycache__/**"]
+rules:
+  - name: tests
+    paths: ["**/*_test.py", "**/test_*.py", "**/tests/**"]
+    min-tokens: 25
+  - name: migrations
+    paths: ["**/migrations/versions/*.py"]
+    min-tokens: 120
+  - name: generated
+    paths: ["**/generated/**"]
+    skip: true
+```
+
+```text
+$ dupehound scan
+Files scanned : 4 / 4
+Skipped files : 1 (skip rule)
+...
+  #1    type-1  similarity: 1.00  9 lines  76 tokens  2 instances  saves ~9 lines [cross-file] [rule: scan ≥50]
+        src/app.py:10-18 (in load_settings)
+        src/other.py:1-9 (in load_settings)
+
+  #2    type-1  similarity: 1.00  6 lines  45 tokens  2 instances  saves ~6 lines [cross-file] [rule: tests ≥25]
+        tests/test_a.py:1-6 (in generate) [test]
+        tests/test_b.py:1-6 (in generate) [test]
+```
+
+The first matching rule wins. A clone that spans files under different rules
+is judged by the highest `min-tokens` among them, so the 45-token fake above
+is reported between the two test files but not where it was also pasted into
+`src/app.py` (production is at 50). `dupehound scan --no-rules` shows what the
+plain `scan` settings would report.
 </details>
 
 <details>

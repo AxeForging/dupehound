@@ -177,3 +177,8 @@ var minCloneLinesFlag = cli.IntFlag{
 	Value: 5,
 	Usage: "Drop clones spanning fewer lines than this (0 = no floor). --min-tokens alone lets a few dense lines qualify; this keeps findings to blocks worth extracting",
 }
+
+var noRulesFlag = cli.BoolFlag{
+	Name:  "no-rules",
+	Usage: "Ignore the rules: block of .dupehound.yml for this run (per-path thresholds and skips)",
+}

@@ -40,7 +40,7 @@ func main() {
 				similarityFlag, maxBucketFlag, minDuplicationFlag, stagedFlag, configFlag,
 				topFlag, sinceFlag, showSuppressedFlag, deadCodeFlag, gitChurnFlag, churnDaysFlag,
 				maxFilesFlag, maxPairsFlag, maxFileSizeFlag, maxMemoryFlag, scopeFlag, minCloneLinesFlag, scanGeneratedFlag,
-				baselineFlag, writeBaselineFlag,
+				baselineFlag, writeBaselineFlag, noRulesFlag,
 			},
 			Action: scanAction.Execute,
 		},
