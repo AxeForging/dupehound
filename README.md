@@ -43,9 +43,9 @@ curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.s
 For Gauntlet or custom GitHub Actions pipelines, install without running:
 
 ```yaml
-- uses: AxeForging/dupehound/setup@v0.2.0
+- uses: AxeForging/dupehound/setup@v0.3.0
   with:
-    version: v0.2.0
+    version: v0.3.0
 ```
 
 Pin both references for reproducible CI; use `version: latest` only when
@@ -60,7 +60,7 @@ Pin a version or install somewhere other than `/usr/local/bin`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/AxeForging/dupehound/main/install.sh | \
-  DUPEHOUND_VERSION=v0.2.0 DUPEHOUND_INSTALL_DIR="$HOME/.local/bin" sh
+  DUPEHOUND_VERSION=v0.3.0 DUPEHOUND_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 ### Upgrading from 0.1
@@ -263,7 +263,7 @@ Install the released tools and run the same contract locally:
 ```sh
 go install github.com/AxeForging/gauntlet/cmd/gauntlet@v0.1.0
 go install github.com/AxeForging/structlint@v0.6.0
-go install github.com/AxeForging/dupehound@v0.2.0
+go install github.com/AxeForging/dupehound@v0.3.0
 gauntlet check
 gauntlet check --staged --format agent
 ```
