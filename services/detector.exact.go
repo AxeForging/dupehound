@@ -22,10 +22,12 @@ func detectExact(files []TokenizedFile, minTokens int, inScopeFiles []bool, whol
 	posToHash := make([][]uint64, len(files))
 	windows := 0
 	for fi, tf := range files {
-		if tf.compact != nil {
+		if tf.compact != nil && tf.compact.window == minTokens && tf.compact.wholeFile == wholeFile {
 			posToHash[fi] = tf.compact.hashes // computed when the file was compacted
 		} else {
-			posToHash[fi] = windowHashes(tf, minTokens, wholeFile)
+			// materialized re-lexes a file compacted for another window (a
+			// per-path rule's pass); any other file is returned as is.
+			posToHash[fi] = windowHashes(tf.materialized(), minTokens, wholeFile)
 		}
 		for _, h := range posToHash[fi] {
 			if h != 0 {

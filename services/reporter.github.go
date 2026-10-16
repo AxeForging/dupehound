@@ -69,6 +69,9 @@ func formatGitHub(report *domain.Report, opts FormatOptions) string {
 		if len(dups) > 0 {
 			msg += "; duplicated at " + strings.Join(dups, ", ")
 		}
+		if c.Rule != "" {
+			msg += fmt.Sprintf(" [rule %s]", ruleTag(c))
+		}
 
 		fmt.Fprintf(&b, "::warning file=%s,line=%d,endLine=%d,title=%s::%s\n",
 			ghEscapeProp(relPath(primary.File, opts.ScanPath)), primary.StartLine, primary.EndLine,

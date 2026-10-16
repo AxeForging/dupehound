@@ -1,0 +1,116 @@
+{
+  "total_files": 6,
+  "scanned_files": 6,
+  "total_clones": 1,
+  "total_lines": 67,
+  "duplicate_lines": 36,
+  "duplication_pct": 53.7,
+  "saved_lines": 27,
+  "file_stats": [
+    {
+      "file": "db/migrations/versions/001_init.py",
+      "total_lines": 9,
+      "duplicate_lines": 9,
+      "duplication_pct": 100
+    },
+    {
+      "file": "src/other.py",
+      "total_lines": 9,
+      "duplicate_lines": 9,
+      "duplication_pct": 100
+    },
+    {
+      "file": "src/generated/client.py",
+      "total_lines": 16,
+      "duplicate_lines": 9,
+      "duplication_pct": 56.3
+    },
+    {
+      "file": "src/app.py",
+      "total_lines": 18,
+      "duplicate_lines": 9,
+      "duplication_pct": 50
+    }
+  ],
+  "clones": [
+    {
+      "hash": "03b40946904ef992",
+      "type": "type-1",
+      "similarity": 1,
+      "line_count": 9,
+      "token_count": 76,
+      "saved_lines": 27,
+      "scope": "cross-dir",
+      "instances": [
+        {
+          "file": "db/migrations/versions/001_init.py",
+          "start_line": 1,
+          "end_line": 9,
+          "function": "load_settings",
+          "lines": [
+            "def load_settings(path, env):",
+            "    raw = read_file(path)",
+            "    data = parse_yaml(raw)",
+            "    for key, value in env.items():",
+            "        if key.startswith(\"APP_\"):",
+            "            data[key[4:].lower()] = value",
+            "    validate(data)",
+            "    log.info(\"loaded settings\", path=path, keys=len(data))",
+            "    return data"
+          ]
+        },
+        {
+          "file": "src/app.py",
+          "start_line": 10,
+          "end_line": 18,
+          "function": "load_settings",
+          "lines": [
+            "def load_settings(path, env):",
+            "    raw = read_file(path)",
+            "    data = parse_yaml(raw)",
+            "    for key, value in env.items():",
+            "        if key.startswith(\"APP_\"):",
+            "            data[key[4:].lower()] = value",
+            "    validate(data)",
+            "    log.info(\"loaded settings\", path=path, keys=len(data))",
+            "    return data"
+          ]
+        },
+        {
+          "file": "src/generated/client.py",
+          "start_line": 1,
+          "end_line": 9,
+          "function": "load_settings",
+          "lines": [
+            "def load_settings(path, env):",
+            "    raw = read_file(path)",
+            "    data = parse_yaml(raw)",
+            "    for key, value in env.items():",
+            "        if key.startswith(\"APP_\"):",
+            "            data[key[4:].lower()] = value",
+            "    validate(data)",
+            "    log.info(\"loaded settings\", path=path, keys=len(data))",
+            "    return data"
+          ]
+        },
+        {
+          "file": "src/other.py",
+          "start_line": 1,
+          "end_line": 9,
+          "function": "load_settings",
+          "lines": [
+            "def load_settings(path, env):",
+            "    raw = read_file(path)",
+            "    data = parse_yaml(raw)",
+            "    for key, value in env.items():",
+            "        if key.startswith(\"APP_\"):",
+            "            data[key[4:].lower()] = value",
+            "    validate(data)",
+            "    log.info(\"loaded settings\", path=path, keys=len(data))",
+            "    return data"
+          ]
+        }
+      ]
+    }
+  ]
+}

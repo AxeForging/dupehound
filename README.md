@@ -22,7 +22,7 @@ Finds type-1 (identical), type-2 (renamed identifiers), and type-3 (near-miss) c
 - [Baseline ratchet](#baseline-ratchet-adopt-on-an-existing-codebase)
 - [Quality gate](#quality-gate)
 - [Pre-commit hook](#pre-commit-hook)
-- [Configuration](#configuration)
+- [Configuration](#configuration) — including [per-path rules](#per-path-rules)
 - [Clone types](#clone-types)
 - [How it works](#how-it-works)
 - [Output formats](#output-formats)
@@ -137,6 +137,7 @@ Options:
                        headers, etc.); skipped by default as they inflate duplication
   --exit-zero          Always exit 0 even when clones are found
   --config, -c         Path to config file (default: auto-discover .dupehound.yml)
+  --no-rules           Ignore the rules: block of the config for this run
   --verbose, -v        Enable verbose logging
   --quiet, -q          Suppress info-level progress logs (the clone report on stdout
                        is unaffected, so failing hooks still show the failure reason)
@@ -306,6 +307,50 @@ scan:
 ```
 
 Config is auto-discovered by walking up from cwd. CLI flags override config values.
+
+### Per-path rules
+
+One threshold rarely fits a whole repository: copied test fakes are 20–40
+tokens, while production at that size is full of classes that share a shape by
+design. `rules:` sets thresholds per path or naming convention, in one scan:
+
+```yaml
+scan:
+  min-tokens: 50                # production
+  exclude: [".venv/**"]
+rules:                          # first matching rule wins; other files use scan
+  - name: tests
+    paths: ["**/*_test.py", "**/tests/**", "**/*.test.ts", "**/*_test.go"]
+    min-tokens: 25
+  - name: migrations
+    paths: ["**/migrations/versions/*.py"]
+    min-tokens: 120
+  - name: generated
+    paths: ["**/generated/**"]
+    skip: true                  # not scanned at all
+```
+
+- A rule may set `min-tokens`, `similarity` (type-3 floor) or `skip: true`;
+  unset values come from `scan`. `name` is optional (unnamed rules show as `rules[N]`).
+- Patterns are matched against the path **relative to `--path`**, in the
+  `--exclude` dialect: no `/` matches the file name anywhere, `**` crosses
+  directories, and a leading `**/` also matches the top level.
+- **A clone spanning files under different rules is judged by the highest
+  `min-tokens` among them.** A 30-token block shared by a test and a
+  production file is not reported when production is at 50 — but the same
+  block copied between test files is, with only its test locations.
+- Every format names the rule that judged a clone: `[rule: tests ≥25]` in
+  text and GitHub annotations, `"rule"` / `"rule_min_tokens"` in JSON,
+  `properties.rule` in SARIF, a 📐 badge in Markdown.
+- `--min-tokens` / `--similarity` on the command line replace the `scan`
+  values; rules still apply on top. `--no-rules` turns them off for one run.
+- Baseline fingerprints, `.dupehound-ignore`, inline markers, `--staged` and
+  `--since` work as before. Mistakes in `rules:` (unknown key, empty
+  `paths`, malformed glob, threshold ≤ 0) stop the scan with the rule and line.
+
+Cost: one exact-detection pass per distinct `min-tokens`. On Go's `net`
+package (378 files) a tests rule at 25 took a scan from 6.2 s to 10.2 s, with
+peak memory up 3%.
 
 ## Clone types
 

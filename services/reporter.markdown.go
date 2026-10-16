@@ -106,6 +106,7 @@ func mdBadges(c domain.Clone) string {
 	add(c.ChurnScore > 0, "🔥 churn %d", c.ChurnScore)
 	add(c.Suppressed, "🚫 suppressed")
 	add(c.Baseline, "📋 baseline")
+	add(c.Rule != "", "📐 rule %s", ruleTag(c))
 	return badges
 }
 

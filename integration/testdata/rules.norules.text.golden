@@ -1,0 +1,28 @@
+dupehound scan results
+======================
+Files scanned : 6 / 6
+Total lines   : 67
+Clones found  : 1
+Duplicate lines: 36 (53.7%)
+Refactor value: ~27 lines removable by deduplication
+Breakdown     : 1 type-1
+
+Hotspots (files by duplication %):
+  100.0%     9/   9 lines  db/migrations/versions/001_init.py
+  100.0%     9/   9 lines  src/other.py
+   56.3%     9/  16 lines  src/generated/client.py
+   50.0%     9/  18 lines  src/app.py
+
+Top clones (by impact):
+  #1    type-1  similarity: 1.00  9 lines  76 tokens  4 instances  saves ~27 lines [cross-dir]
+        db/migrations/versions/001_init.py:1-9 (in load_settings)
+        src/app.py:10-18 (in load_settings)
+        src/generated/client.py:1-9 (in load_settings)
+        src/other.py:1-9 (in load_settings)
+        | def load_settings(path, env):
+        |     raw = read_file(path)
+        |     data = parse_yaml(raw)
+        |     for key, value in env.items():
+        |         if key.startswith("APP_"):
+        ... (4 more lines)
+

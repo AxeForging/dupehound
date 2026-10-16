@@ -134,6 +134,9 @@ func summaryRows(r *domain.Report) []metricRow {
 	if r.SkippedLargeFiles > 0 {
 		rows = append(rows, newRow("Skipped files : %d (over --max-file-size)", "Skipped (oversized) | %d", r.SkippedLargeFiles))
 	}
+	if r.SkippedByRule > 0 {
+		rows = append(rows, newRow("Skipped files : %d (skip rule)", "Skipped (skip rule) | %d", r.SkippedByRule))
+	}
 	rows = append(rows, newRow("Total lines   : %d", "Total lines | %d", r.TotalLines))
 	if r.SuppressedClones > 0 {
 		rows = append(rows, newRow("Clones found  : %d (%d suppressed)", "Clones found | %d (%d suppressed)", r.TotalClones, r.SuppressedClones))
@@ -208,6 +211,12 @@ func cloneFunctionList(c domain.Clone) string {
 		return ""
 	}
 	return "in " + strings.Join(names, ", ")
+}
+
+// ruleTag names the rule that judged a clone and its threshold, for example
+// "tests ≥25", as every format shows it.
+func ruleTag(c domain.Clone) string {
+	return fmt.Sprintf("%s ≥%d", c.Rule, c.RuleMinTokens)
 }
 
 // newRow renders one summary metric for both the text and the markdown report.

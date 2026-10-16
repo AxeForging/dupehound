@@ -34,6 +34,25 @@ scan:
 
   # Always exit 0 even when clones are found (useful for reporting pipelines).
   exit-zero: false
+
+# Per-path rules override min-tokens / similarity, or skip files, for the
+# paths they match (globs relative to the scanned path; a leading **/ also
+# matches the top level). The first matching rule wins; other files use scan.
+# A clone spanning files under different rules is judged by the highest
+# min-tokens among them. --no-rules ignores this block for one run.
+rules:
+  # Tests: catch small copied fakes and fixtures.
+  - name: tests
+    paths: ["**/*_test.go", "**/*_test.py", "**/test_*.py", "**/tests/**", "**/*.test.ts", "**/*.spec.ts"]
+    min-tokens: 25
+  # Migrations repeat the same shape by design: only flag large copies.
+  - name: migrations
+    paths: ["**/migrations/**"]
+    min-tokens: 120
+  # Generated code is not refactored by hand.
+  - name: generated
+    paths: ["**/generated/**"]
+    skip: true
 `
 
 // InitAction handles the init command.

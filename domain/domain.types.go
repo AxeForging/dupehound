@@ -47,6 +47,11 @@ type Clone struct {
 	Suppressed   bool            `json:"suppressed,omitempty"`
 	Baseline     bool            `json:"baseline,omitempty"` // true when covered by the --baseline file (known debt)
 	ChurnScore   int             `json:"churn_score,omitempty"`
+	// Rule names the .dupehound.yml rule that judged this clone ("scan" for
+	// the base settings) and RuleMinTokens the threshold it applied. Both are
+	// set only when rules are in use, so output without rules is unchanged.
+	Rule          string `json:"rule,omitempty"`
+	RuleMinTokens int    `json:"rule_min_tokens,omitempty"`
 }
 
 // FileStats holds per-file duplication metrics.
@@ -63,6 +68,7 @@ type Report struct {
 	ScannedFiles      int     `json:"scanned_files"`
 	SkippedFiles      int     `json:"skipped_files,omitempty"`       // binary files skipped
 	SkippedLargeFiles int     `json:"skipped_large_files,omitempty"` // files over --max-file-size
+	SkippedByRule     int     `json:"skipped_by_rule,omitempty"`     // files matched by a `skip: true` rule
 	TotalClones       int     `json:"total_clones"`
 	TotalLines        int     `json:"total_lines"`
 	DuplicateLines    int     `json:"duplicate_lines"`
@@ -106,7 +112,20 @@ const (
 
 // Config is the structure of a .dupehound.yml config file.
 type Config struct {
-	Scan ScanConfig `yaml:"scan"`
+	Scan  ScanConfig `yaml:"scan"`
+	Rules []Rule     `yaml:"rules"`
+}
+
+// Rule overrides scan settings for the files its Paths match. The first rule
+// that matches a file applies to it; a file no rule matches uses ScanConfig.
+// Zero values mean "inherit from scan" (explicit zeros are rejected when the
+// config is loaded).
+type Rule struct {
+	Name       string   `yaml:"name"`
+	Paths      []string `yaml:"paths"`
+	MinTokens  int      `yaml:"min-tokens"`
+	Similarity float64  `yaml:"similarity"`
+	Skip       bool     `yaml:"skip"`
 }
 
 // ScanConfig holds all scan-related settings from the config file.

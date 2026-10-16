@@ -54,7 +54,11 @@ type TokenizedFile struct {
 // from disk for the few files a clone actually touches.
 type compactIndex struct {
 	hashes []uint64
-	lines  []int32
+	// window and wholeFile are the detection settings hashes were computed
+	// for; a run with others (a per-path rule) rehashes from disk.
+	window    int
+	wholeFile bool
+	lines     []int32
 	// extraLines records, for the string tokens that span several lines, how
 	// many lines beyond their first they cover.
 	extraLines map[int32]int32
@@ -69,9 +73,11 @@ func (tf TokenizedFile) compacted(minTokens int, wholeFile bool, lang *domain.La
 		return tf
 	}
 	idx := &compactIndex{
-		hashes: windowHashes(tf, minTokens, wholeFile),
-		lines:  make([]int32, len(tf.Tokens)),
-		lang:   lang,
+		hashes:    windowHashes(tf, minTokens, wholeFile),
+		window:    minTokens,
+		wholeFile: wholeFile,
+		lines:     make([]int32, len(tf.Tokens)),
+		lang:      lang,
 	}
 	for i, tok := range tf.Tokens {
 		idx.lines[i] = int32(tok.Line)

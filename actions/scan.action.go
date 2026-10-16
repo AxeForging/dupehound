@@ -134,6 +134,11 @@ func (a *ScanAction) Execute(c *cli.Context) error {
 		opts.Baseline = c.String("baseline")
 	}
 	opts.WriteBaseline = c.String("write-baseline")
+	// Per-path rules layer over the base settings (CLI, then scan block);
+	// --no-rules turns them off for one run.
+	if !c.Bool("no-rules") {
+		opts.Rules = cfg.Rules
+	}
 
 	services.ApplyConfigDefaults(&opts, cfg)
 

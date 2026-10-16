@@ -51,6 +51,9 @@ type sarifResultProperties struct {
 	Scope       string  `json:"scope,omitempty"`
 	SavedLines  int     `json:"savedLines,omitempty"`
 	Fingerprint string  `json:"fingerprint,omitempty"`
+	// The .dupehound.yml rule that judged the clone, when rules are in use.
+	Rule          string `json:"rule,omitempty"`
+	RuleMinTokens int    `json:"ruleMinTokens,omitempty"`
 }
 
 type sarifMessage struct {
@@ -101,11 +104,13 @@ func formatSARIF(report *domain.Report) (string, error) {
 			Message:   sarifMessage{Text: msg},
 			Locations: locs,
 			Properties: sarifResultProperties{
-				CloneType:   clone.Type,
-				Similarity:  clone.Similarity,
-				Scope:       clone.Scope,
-				SavedLines:  clone.SavedLines,
-				Fingerprint: clone.Hash,
+				CloneType:     clone.Type,
+				Similarity:    clone.Similarity,
+				Scope:         clone.Scope,
+				SavedLines:    clone.SavedLines,
+				Fingerprint:   clone.Hash,
+				Rule:          clone.Rule,
+				RuleMinTokens: clone.RuleMinTokens,
 			},
 		})
 	}

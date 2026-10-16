@@ -1,6 +1,7 @@
 package services
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -37,8 +38,17 @@ func LoadConfig(path string) (domain.Config, error) {
 	if err != nil {
 		return domain.Config{}, err
 	}
+	// Rules are validated on the YAML tree first, so their errors name the
+	// rule and line instead of a Go type.
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return domain.Config{}, err
+	}
+	if err := validateRulesNode(&doc); err != nil {
+		return domain.Config{}, fmt.Errorf("%s: %w", path, err)
+	}
 	var cfg domain.Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := doc.Decode(&cfg); err != nil {
 		return domain.Config{}, err
 	}
 	return cfg, nil

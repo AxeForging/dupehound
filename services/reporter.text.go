@@ -88,6 +88,9 @@ func cloneBadges(c domain.Clone) string {
 	if c.ChurnScore > 0 {
 		tag += fmt.Sprintf(" [churn: %d commits]", c.ChurnScore)
 	}
+	if c.Rule != "" {
+		tag += fmt.Sprintf(" [rule: %s]", ruleTag(c))
+	}
 	return tag
 }
 
